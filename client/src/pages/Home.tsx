@@ -1,85 +1,61 @@
 /**
- * Touch Theremin — Home Page
+ * Prime Mover — Just-Intonation MODE/CHORD Instrument
  *
- * Design: Bioluminescent Deep Sea
- * - Deep ocean black (#060810) base with ambient blue-green glow
- * - Touch circles: luminous blobs with inner light source, full spectrum mapped to pitch
- * - Particle field: 50 drifting dots that scatter from touch points
- * - Ripple rings on touch start, spring-scale entrance, flash-fade on release
- * - Typography: DM Mono for note labels, DM Sans for UI hints
+ * Design: minimal dark grid, two rows of 18 pads.
+ * - CHORD row (top half): hold pads to sustain notes at MODE × ratio
+ * - NEXT row (bottom half): tap to multiply MODE by that pad's ratio; transposes held chord
+ * - Top band: BASE / MODE display, RESET button, BASE ±1 Hz controls
  *
  * Audio: Web Audio API
- * - X axis → pitch (C pentatonic, C3–C6)
- * - Y axis → volume (quiet top, loud bottom)
- * - Oscillator stack: sine + triangle + upper partials → warm theremin timbre
+ * - Four-oscillator Voice (×1 sine, ×1.5 triangle, ×2 sine, ×3 sine) with decreasing gain
+ * - 40 ms attack ramp, 120 ms release ramp — no clicks
+ * - NEXT tap: 250 ms blip at new MODE frequency
+ * - MODE change: 30 ms retune ramp on all held CHORD voices
+ *
+ * State: all real-time data in useRef; only display fraction in useState.
  */
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 
-// ─── Music theory ────────────────────────────────────────────────────────────
-const PENTATONIC_INTERVALS = [0, 2, 4, 7, 9];
-const BASE_NOTE = 48; // C3
-const TOP_NOTE = 84;  // C6
-const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+// ─── Ratios ───────────────────────────────────────────────────────────────────
+const RATIOS: [number, number][] = [
+  [1,7],[1,6],[1,5],[1,4],[2,7],[1,3],[2,5],[3,7],[1,2],
+  [4,7],[3,5],[2,3],[5,7],[3,4],[4,5],[5,6],[6,7],[1,1],
+];
 
-function midiToFreq(midi: number) {
-  return 440 * Math.pow(2, (midi - 69) / 12);
+// ─── GCD ─────────────────────────────────────────────────────────────────────
+function gcd(a: number, b: number): number {
+  a = Math.abs(Math.round(a));
+  b = Math.abs(Math.round(b));
+  while (b) { const t = b; b = a % b; a = t; }
+  return a;
 }
 
-function xToFreq(x: number, w: number) {
-  const totalSemitones = TOP_NOTE - BASE_NOTE;
-  const raw = (x / w) * totalSemitones;
-  const octave = Math.floor(raw / 12);
-  const semInOct = raw % 12;
-  let best = PENTATONIC_INTERVALS[0];
-  let bestDist = Infinity;
-  for (const iv of PENTATONIC_INTERVALS) {
-    const d = Math.abs(semInOct - iv);
-    if (d < bestDist) { bestDist = d; best = iv; }
-  }
-  const midi = Math.min(BASE_NOTE + octave * 12 + best, TOP_NOTE);
-  return midiToFreq(midi);
-}
-
-function yToGain(y: number, h: number) {
-  return 0.02 + (y / h) * 0.53;
-}
-
-function xToHue(x: number, w: number) {
-  return Math.round((x / w) * 300);
-}
-
-function freqToName(freq: number) {
-  const midi = Math.round(69 + 12 * Math.log2(freq / 440));
-  const oct = Math.floor(midi / 12) - 1;
-  return NOTE_NAMES[midi % 12] + oct;
-}
-
-// ─── Voice (Web Audio) ────────────────────────────────────────────────────────
+// ─── Voice ────────────────────────────────────────────────────────────────────
 class Voice {
   masterGain: GainNode;
   filter: BiquadFilterNode;
   oscs: Array<{ osc: OscillatorNode; g: GainNode }> = [];
-  _freq = 0;
 
-  constructor(private ctx: AudioContext, x: number, y: number, w: number, h: number) {
+  constructor(private ctx: AudioContext, freq: number) {
     this.masterGain = ctx.createGain();
     this.masterGain.gain.setValueAtTime(0.0001, ctx.currentTime);
 
     this.filter = ctx.createBiquadFilter();
     this.filter.type = "lowpass";
-    this.filter.frequency.value = 4000;
-    this.filter.Q.value = 1.2;
+    this.filter.frequency.value = 5000;
+    this.filter.Q.value = 0.8;
     this.filter.connect(this.masterGain);
     this.masterGain.connect(ctx.destination);
 
-    const ratios = [1, 1.5, 2, 3];
-    const gains  = [1, 0.35, 0.2, 0.08];
+    const ratios  = [1, 1.5, 2, 3];
+    const gains   = [1, 0.35, 0.2, 0.08];
     const types: OscillatorType[] = ["sine", "triangle", "sine", "sine"];
 
     for (let i = 0; i < ratios.length; i++) {
       const osc = ctx.createOscillator();
       osc.type = types[i];
+      osc.frequency.setValueAtTime(freq * ratios[i], ctx.currentTime);
       const g = ctx.createGain();
       g.gain.value = gains[i];
       osc.connect(g);
@@ -88,99 +64,215 @@ class Voice {
       this.oscs.push({ osc, g });
     }
 
-    this.update(x, y, w, h, true);
+    // Attack ramp
+    this.masterGain.gain.linearRampToValueAtTime(0.55, ctx.currentTime + 0.04);
   }
 
-  update(x: number, y: number, w: number, h: number, instant = false) {
+  retune(freq: number, rampMs = 30) {
     const now = this.ctx.currentTime;
-    const freq = xToFreq(x, w);
-    const gain = yToGain(y, h);
-    this._freq = freq;
-
-    const ramp = instant ? 0 : 0.04;
-    if (instant) {
-      this.oscs[0].osc.frequency.setValueAtTime(freq, now);
-      this.oscs[1].osc.frequency.setValueAtTime(freq * 1.5 + 0.5, now);
-      this.oscs[2].osc.frequency.setValueAtTime(freq * 2.01, now);
-      this.oscs[3].osc.frequency.setValueAtTime(freq * 3.02, now);
-      this.masterGain.gain.setValueAtTime(gain, now);
-    } else {
-      this.oscs[0].osc.frequency.linearRampToValueAtTime(freq, now + ramp);
-      this.oscs[1].osc.frequency.linearRampToValueAtTime(freq * 1.5 + 0.5, now + ramp);
-      this.oscs[2].osc.frequency.linearRampToValueAtTime(freq * 2.01, now + ramp);
-      this.oscs[3].osc.frequency.linearRampToValueAtTime(freq * 3.02, now + ramp);
-      this.masterGain.gain.linearRampToValueAtTime(gain, now + ramp);
+    const ramp = rampMs / 1000;
+    const baseRatios = [1, 1.5, 2, 3];
+    for (let i = 0; i < this.oscs.length; i++) {
+      this.oscs[i].osc.frequency.linearRampToValueAtTime(freq * baseRatios[i], now + ramp);
     }
   }
 
-  stop() {
+  stop(decayMs = 120) {
     const now = this.ctx.currentTime;
-    this.masterGain.gain.linearRampToValueAtTime(0.0001, now + 0.12);
+    const decay = decayMs / 1000;
+    this.masterGain.gain.linearRampToValueAtTime(0.0001, now + decay);
     setTimeout(() => {
       try {
         for (const { osc } of this.oscs) osc.stop();
         this.masterGain.disconnect();
       } catch (_) {}
-    }, 200);
+    }, decayMs + 50);
   }
 }
 
-// ─── Particle system ──────────────────────────────────────────────────────────
-interface Particle {
-  x: number; y: number;
-  vx: number; vy: number;
-  r: number; alpha: number;
+// ─── Pad geometry ─────────────────────────────────────────────────────────────
+interface Pad {
+  index: number;
+  row: "chord" | "next";
+  ratioIndex: number;
+  x: number; y: number; w: number; h: number;
 }
 
-function makeParticles(count: number, w: number, h: number): Particle[] {
-  return Array.from({ length: count }, () => ({
-    x: Math.random() * w,
-    y: Math.random() * h,
-    vx: (Math.random() - 0.5) * 0.3,
-    vy: (Math.random() - 0.5) * 0.3,
-    r: Math.random() * 1.5 + 0.5,
-    alpha: Math.random() * 0.4 + 0.1,
-  }));
+function buildPads(W: number, H: number): Pad[] {
+  const topBand   = Math.round(H * 0.08);
+  const rowH      = Math.round((H - topBand) / 2);
+  const padW      = W / 18;
+  const pads: Pad[] = [];
+  const gap = 2;
+
+  for (let i = 0; i < 18; i++) {
+    pads.push({
+      index: i,
+      row: "chord",
+      ratioIndex: i,
+      x: i * padW + gap / 2,
+      y: topBand + gap / 2,
+      w: padW - gap,
+      h: rowH - gap,
+    });
+  }
+  for (let i = 0; i < 18; i++) {
+    pads.push({
+      index: i + 18,
+      row: "next",
+      ratioIndex: i,
+      x: i * padW + gap / 2,
+      y: topBand + rowH + gap / 2,
+      w: padW - gap,
+      h: rowH - gap,
+    });
+  }
+  return pads;
 }
 
-// ─── Ripple ───────────────────────────────────────────────────────────────────
-interface Ripple {
-  x: number; y: number;
-  r: number; maxR: number;
-  hue: number; alpha: number;
-  born: number;
+function hitPad(pads: Pad[], px: number, py: number): Pad | null {
+  for (const p of pads) {
+    if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+  }
+  return null;
 }
 
-// ─── Touch dot state ──────────────────────────────────────────────────────────
-interface DotState {
-  x: number; y: number;
-  hue: number; size: number;
-  note: string; scale: number;
-  born: number;
+// ─── Rounded rect helper ──────────────────────────────────────────────────────
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number, r: number
+) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Colours ──────────────────────────────────────────────────────────────────
+const COLOR = {
+  bg:          "#0d0f14",
+  chordBase:   "#1a2a3a",
+  chordLit:    "#2a7fff",
+  chordBorder: "#1e3a5a",
+  nextBase:    "#1a2e1a",
+  nextLit:     "#22cc55",
+  nextBorder:  "#1e4a1e",
+  text:        "#8ab4cc",
+  textBright:  "#d0e8f8",
+  ratioText:   "#c8dce8",
+  ratioTextLit:"#ffffff",
+  topBg:       "#0a0c10",
+  btnBg:       "#1e2a38",
+  btnHover:    "#2a3a50",
+  btnText:     "#9ab8cc",
+};
+
+// ─── Component ────────────────────────────────────────────────────────────────
+interface DisplayState {
+  base: number;
+  modeNum: number;
+  modeDen: number;
+}
+
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const ctxAudioRef = useRef<AudioContext | null>(null);
-  const voicesRef = useRef<Map<string, Voice>>(new Map());
-  const dotsRef = useRef<Map<string, DotState>>(new Map());
-  const particlesRef = useRef<Particle[]>([]);
-  const ripplesRef = useRef<Ripple[]>([]);
-  const rafRef = useRef<number>(0);
-  const hintAlphaRef = useRef(1);
-  const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Audio context (lazy, on first touch) ──
-  function getAudioCtx() {
-    if (!ctxAudioRef.current) {
-      ctxAudioRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+  // Audio
+  const audioCtxRef   = useRef<AudioContext | null>(null);
+  const modeRef       = useRef<number>(220);
+  const baseRef       = useRef<number>(220);
+  const modeNumRef    = useRef<number>(1);
+  const modeDenRef    = useRef<number>(1);
+
+  // Voices
+  const chordVoicesRef = useRef<Map<number, Voice>>(new Map()); // padIndex → Voice
+  const nextVoiceRef   = useRef<Voice | null>(null);
+  const nextBlipTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Touch tracking: touch identifier → pad index (or null if off-pad)
+  const touchMapRef = useRef<Map<number, number | null>>(new Map());
+
+  // Pad flash state: padIndex → flash-until timestamp
+  const flashRef = useRef<Map<number, number>>(new Map());
+
+  // Lit CHORD pads: set of pad indices currently held
+  const litChordRef = useRef<Set<number>>(new Set());
+
+  // Geometry
+  const padsRef = useRef<Pad[]>([]);
+
+  // UI control hit areas (built each draw)
+  const resetBtnRef   = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const basePlusBtnRef  = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const baseMinusBtnRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  // Display state (React — drives text re-render)
+  const [display, setDisplay] = useState<DisplayState>({ base: 220, modeNum: 1, modeDen: 1 });
+
+  // Portrait warning
+  const [portrait, setPortrait] = useState(false);
+
+  // RAF
+  const rafRef = useRef<number>(0);
+
+  // ── Audio context ──
+  function getAC(): AudioContext {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
-    if (ctxAudioRef.current.state === "suspended") ctxAudioRef.current.resume();
-    return ctxAudioRef.current;
+    if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
+    return audioCtxRef.current;
   }
 
-  // ── Canvas draw loop ──
+  // ── Sync modeRef from fraction ──
+  function syncMode() {
+    modeRef.current = baseRef.current * modeNumRef.current / modeDenRef.current;
+  }
+
+  // ── Retune all held CHORD voices ──
+  function retuneChord(rampMs = 30) {
+    for (const [padIdx, voice] of Array.from(chordVoicesRef.current)) {
+      const ri = padIdx; // chord pad index 0–17 == ratioIndex
+      const [num, den] = RATIOS[ri];
+      voice.retune(modeRef.current * (num / den), rampMs);
+    }
+  }
+
+  // ── Update display state ──
+  function pushDisplay() {
+    setDisplay({
+      base:    baseRef.current,
+      modeNum: modeNumRef.current,
+      modeDen: modeDenRef.current,
+    });
+  }
+
+  // ── RESET ──
+  const doReset = useCallback(() => {
+    modeNumRef.current = 1;
+    modeDenRef.current = 1;
+    syncMode();
+    retuneChord(30);
+    pushDisplay();
+  }, []);
+
+  // ── BASE ±1 ──
+  const doBaseChange = useCallback((delta: number) => {
+    baseRef.current = Math.max(20, baseRef.current + delta);
+    syncMode();
+    retuneChord(30);
+    pushDisplay();
+  }, []);
+
+  // ── Draw loop ──
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -188,230 +280,266 @@ export default function Home() {
     const W = canvas.width;
     const H = canvas.height;
     const now = performance.now();
+    const topBand = Math.round(H * 0.08);
 
     // Background
-    ctx.fillStyle = "#060810";
+    ctx.fillStyle = COLOR.bg;
     ctx.fillRect(0, 0, W, H);
 
-    // Dot-grid
-    ctx.fillStyle = "rgba(0,180,255,0.06)";
-    const gs = 48;
-    for (let gx = gs; gx < W; gx += gs) {
-      for (let gy = gs; gy < H; gy += gs) {
-        ctx.beginPath();
-        ctx.arc(gx, gy, 1, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
+    // Top band background
+    ctx.fillStyle = COLOR.topBg;
+    ctx.fillRect(0, 0, W, topBand);
 
-    // Particles
-    const touchPoints = Array.from(dotsRef.current.values());
-    for (const p of particlesRef.current) {
-      // Repel from touch points
-      for (const dot of touchPoints) {
-        const dx = p.x - dot.x;
-        const dy = p.y - dot.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 120 && dist > 0) {
-          const force = (120 - dist) / 120 * 0.4;
-          p.vx += (dx / dist) * force;
-          p.vy += (dy / dist) * force;
-        }
-      }
-      // Damping
-      p.vx *= 0.97;
-      p.vy *= 0.97;
-      // Drift
-      p.x += p.vx;
-      p.y += p.vy;
-      // Wrap
-      if (p.x < 0) p.x = W;
-      if (p.x > W) p.x = 0;
-      if (p.y < 0) p.y = H;
-      if (p.y > H) p.y = 0;
+    // ── Draw pads ──
+    const pads = padsRef.current;
+    for (const pad of pads) {
+      const isChord = pad.row === "chord";
+      const isLit   = isChord
+        ? litChordRef.current.has(pad.index)
+        : (flashRef.current.get(pad.index) ?? 0) > now;
 
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(80,200,255,${p.alpha})`;
+      const baseColor   = isChord ? COLOR.chordBase   : COLOR.nextBase;
+      const litColor    = isChord ? COLOR.chordLit    : COLOR.nextLit;
+      const borderColor = isChord ? COLOR.chordBorder : COLOR.nextBorder;
+
+      roundRect(ctx, pad.x, pad.y, pad.w, pad.h, 5);
+      ctx.fillStyle = isLit ? litColor : baseColor;
       ctx.fill();
-    }
-
-    // Ripples
-    ripplesRef.current = ripplesRef.current.filter(rp => {
-      const age = (now - rp.born) / 600;
-      if (age > 1) return false;
-      rp.r = rp.maxR * age;
-      rp.alpha = (1 - age) * 0.5;
-      ctx.beginPath();
-      ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
-      ctx.strokeStyle = `hsla(${rp.hue},100%,70%,${rp.alpha})`;
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1;
       ctx.stroke();
-      return true;
-    });
 
-    // Touch circles
-    for (const [, dot] of Array.from(dotsRef.current)) {
-      const age = (now - dot.born) / 200;
-      // Spring overshoot: 0.5 → 1.08 → 1.0
-      let sc = dot.scale;
-      if (age < 1) {
-        const t = age;
-        sc = 0.5 + 0.58 * t + 0.08 * Math.sin(t * Math.PI);
-        dot.scale = sc;
-      }
-
-      const r = (dot.size / 2) * sc;
-      const hue = dot.hue;
-
-      // Outer glow
-      const glow = ctx.createRadialGradient(dot.x, dot.y, 0, dot.x, dot.y, r * 2.2);
-      glow.addColorStop(0, `hsla(${hue},100%,65%,0.18)`);
-      glow.addColorStop(1, `hsla(${hue},100%,50%,0)`);
-      ctx.beginPath();
-      ctx.arc(dot.x, dot.y, r * 2.2, 0, Math.PI * 2);
-      ctx.fillStyle = glow;
-      ctx.fill();
-
-      // Main blob
-      const grad = ctx.createRadialGradient(dot.x - r * 0.3, dot.y - r * 0.3, r * 0.05, dot.x, dot.y, r);
-      grad.addColorStop(0, `hsla(${hue},80%,92%,0.9)`);
-      grad.addColorStop(0.35, `hsla(${hue},100%,65%,0.75)`);
-      grad.addColorStop(1, `hsla(${hue},100%,40%,0.3)`);
-      ctx.beginPath();
-      ctx.arc(dot.x, dot.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = grad;
-      ctx.fill();
-
-      // Inner bright core
-      const core = ctx.createRadialGradient(dot.x - r * 0.25, dot.y - r * 0.25, 0, dot.x, dot.y, r * 0.45);
-      core.addColorStop(0, `rgba(255,255,255,0.85)`);
-      core.addColorStop(1, `rgba(255,255,255,0)`);
-      ctx.beginPath();
-      ctx.arc(dot.x, dot.y, r * 0.45, 0, Math.PI * 2);
-      ctx.fillStyle = core;
-      ctx.fill();
-
-      // Note label
-      ctx.font = `600 12px 'DM Mono', monospace`;
-      ctx.fillStyle = `hsla(${hue},60%,90%,0.85)`;
+      // Ratio label
+      const [num, den] = RATIOS[pad.ratioIndex];
+      const label = `${num}/${den}`;
+      const fontSize = Math.max(10, Math.min(14, pad.w * 0.38));
+      ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
       ctx.textAlign = "center";
-      ctx.fillText(dot.note, dot.x, dot.y + r + 18);
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = isLit ? COLOR.ratioTextLit : COLOR.ratioText;
+      ctx.fillText(label, pad.x + pad.w / 2, pad.y + pad.h / 2);
     }
 
-    // Axis labels + hint
-    ctx.font = `11px 'DM Sans', sans-serif`;
-    ctx.letterSpacing = "0.1em";
-
-    const axisAlpha = dotsRef.current.size > 0 ? 0.18 : 0.28;
-    ctx.fillStyle = `rgba(0,200,255,${axisAlpha})`;
+    // ── Row labels ──
+    const labelFontSize = Math.max(9, Math.min(12, topBand * 0.5));
+    ctx.font = `500 ${labelFontSize}px 'DM Sans', sans-serif`;
     ctx.textAlign = "left";
-    ctx.fillText("◀ LOW PITCH", 16, H - 14);
-    ctx.textAlign = "right";
-    ctx.fillText("HIGH PITCH ▶", W - 16, H - 14);
-    ctx.textAlign = "center";
-    ctx.fillText("QUIET ▲", W / 2, 20);
-    ctx.fillText("▼ LOUD", W / 2, H - 14);
-
-    // Hint
-    if (hintAlphaRef.current > 0) {
-      ctx.font = `16px 'DM Sans', sans-serif`;
-      ctx.fillStyle = `rgba(255,255,255,${hintAlphaRef.current * 0.22})`;
-      ctx.textAlign = "center";
-      ctx.fillText("Touch anywhere to play", W / 2, H / 2);
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLOR.text;
+    if (pads.length > 0) {
+      const cp = pads[0];
+      ctx.fillText("CHORD", 6, cp.y + cp.h / 2);
+      const np = pads[18];
+      ctx.fillText("NEXT", 6, np.y + np.h / 2);
     }
+
+    // ── Top band: controls ──
+    const btnH    = Math.round(topBand * 0.62);
+    const btnY    = Math.round((topBand - btnH) / 2);
+    const btnR    = 4;
+    const margin  = 8;
+
+    // BASE label + value
+    ctx.font = `500 ${Math.max(9, Math.min(11, topBand * 0.44))}px 'DM Mono', monospace`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLOR.text;
+    ctx.fillText("BASE", margin, topBand / 2);
+    const baseLabel = `${display.base} Hz`;
+    ctx.fillStyle = COLOR.textBright;
+    ctx.fillText(baseLabel, margin + 38, topBand / 2);
+
+    // MODE label + fraction
+    const modeX = margin + 38 + ctx.measureText(baseLabel).width + 24;
+    ctx.fillStyle = COLOR.text;
+    ctx.fillText("MODE", modeX, topBand / 2);
+    ctx.fillStyle = COLOR.textBright;
+    ctx.fillText(`${display.modeNum}/${display.modeDen}`, modeX + 42, topBand / 2);
+
+    // Right-side controls: [−] [+] [RESET]
+    const resetW  = 52;
+    const arrowW  = 28;
+    const spacing = 6;
+    let rx = W - margin;
+
+    // RESET
+    rx -= resetW;
+    const resetBtn = { x: rx, y: btnY, w: resetW, h: btnH };
+    resetBtnRef.current = resetBtn;
+    roundRect(ctx, resetBtn.x, resetBtn.y, resetBtn.w, resetBtn.h, btnR);
+    ctx.fillStyle = COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.font = `600 ${Math.max(9, Math.min(11, topBand * 0.44))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLOR.btnText;
+    ctx.fillText("RESET", resetBtn.x + resetBtn.w / 2, resetBtn.y + resetBtn.h / 2);
+
+    rx -= spacing;
+
+    // BASE + button
+    rx -= arrowW;
+    const plusBtn = { x: rx, y: btnY, w: arrowW, h: btnH };
+    basePlusBtnRef.current = plusBtn;
+    roundRect(ctx, plusBtn.x, plusBtn.y, plusBtn.w, plusBtn.h, btnR);
+    ctx.fillStyle = COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.font = `700 ${Math.max(11, Math.min(14, topBand * 0.55))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLOR.btnText;
+    ctx.fillText("+", plusBtn.x + plusBtn.w / 2, plusBtn.y + plusBtn.h / 2);
+
+    rx -= spacing;
+
+    // BASE − button
+    rx -= arrowW;
+    const minusBtn = { x: rx, y: btnY, w: arrowW, h: btnH };
+    baseMinusBtnRef.current = minusBtn;
+    roundRect(ctx, minusBtn.x, minusBtn.y, minusBtn.w, minusBtn.h, btnR);
+    ctx.fillStyle = COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.font = `700 ${Math.max(11, Math.min(14, topBand * 0.55))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLOR.btnText;
+    ctx.fillText("−", minusBtn.x + minusBtn.w / 2, minusBtn.y + minusBtn.h / 2);
 
     rafRef.current = requestAnimationFrame(draw);
-  }, []);
+  }, [display]);
 
-  // ── Touch / mouse helpers ──
-  const onStart = useCallback((id: string, x: number, y: number) => {
-    const W = window.innerWidth;
-    const H = window.innerHeight;
-    const hue = xToHue(x, W);
-    const gain = yToGain(y, H);
-    const size = 70 + gain * 80;
-    const freq = xToFreq(x, W);
+  // ── Hit test top-band buttons ──
+  function hitBtn(
+    btn: { x: number; y: number; w: number; h: number } | null,
+    px: number, py: number
+  ) {
+    if (!btn) return false;
+    return px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h;
+  }
 
-    // Dot
-    dotsRef.current.set(id, {
-      x, y, hue, size,
-      note: freqToName(freq),
-      scale: 0.5,
-      born: performance.now(),
-    });
-
-    // Ripple
-    ripplesRef.current.push({ x, y, r: 0, maxR: size * 1.8, hue, alpha: 0.5, born: performance.now() });
-
-    // Voice
-    const ac = getAudioCtx();
-    voicesRef.current.set(id, new Voice(ac, x, y, W, H));
-
-    // Fade hint
-    if (hintAlphaRef.current > 0) {
-      hintAlphaRef.current = 0;
+  // ── Touch / mouse unified handlers ──
+  const handleStart = useCallback((id: number, px: number, py: number) => {
+    // Check top-band buttons first
+    if (hitBtn(resetBtnRef.current, px, py)) {
+      doReset();
+      touchMapRef.current.set(id, null);
+      return;
     }
-  }, []);
-
-  const onMove = useCallback((id: string, x: number, y: number) => {
-    const W = window.innerWidth;
-    const H = window.innerHeight;
-    const dot = dotsRef.current.get(id);
-    if (dot) {
-      const hue = xToHue(x, W);
-      const gain = yToGain(y, H);
-      const size = 70 + gain * 80;
-      const freq = xToFreq(x, W);
-      dot.x = x; dot.y = y; dot.hue = hue; dot.size = size;
-      dot.note = freqToName(freq);
+    if (hitBtn(basePlusBtnRef.current, px, py)) {
+      doBaseChange(+1);
+      touchMapRef.current.set(id, null);
+      return;
     }
-    const voice = voicesRef.current.get(id);
-    if (voice) voice.update(x, y, W, H);
-  }, []);
-
-  const onEnd = useCallback((id: string) => {
-    dotsRef.current.delete(id);
-    const voice = voicesRef.current.get(id);
-    if (voice) { voice.stop(); voicesRef.current.delete(id); }
-    if (dotsRef.current.size === 0) {
-      // Fade hint back in after 4s of silence
-      if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
-      hintTimerRef.current = setTimeout(() => {
-        hintAlphaRef.current = 1;
-      }, 4000);
+    if (hitBtn(baseMinusBtnRef.current, px, py)) {
+      doBaseChange(-1);
+      touchMapRef.current.set(id, null);
+      return;
     }
+
+    const pad = hitPad(padsRef.current, px, py);
+    if (!pad) {
+      touchMapRef.current.set(id, null);
+      return;
+    }
+
+    touchMapRef.current.set(id, pad.index);
+
+    if (pad.row === "chord") {
+      // Sound the note
+      const [num, den] = RATIOS[pad.ratioIndex];
+      const freq = modeRef.current * (num / den);
+      const ac = getAC();
+      const voice = new Voice(ac, freq);
+      chordVoicesRef.current.set(pad.index, voice);
+      litChordRef.current.add(pad.index);
+
+    } else {
+      // NEXT: multiply MODE
+      const [num, den] = RATIOS[pad.ratioIndex];
+      modeNumRef.current *= num;
+      modeDenRef.current *= den;
+      const g = gcd(modeNumRef.current, modeDenRef.current);
+      modeNumRef.current /= g;
+      modeDenRef.current /= g;
+      syncMode();
+      pushDisplay();
+
+      // Retune held chord
+      retuneChord(30);
+
+      // Flash
+      flashRef.current.set(pad.index, performance.now() + 150);
+
+      // Blip at new MODE
+      if (nextVoiceRef.current) {
+        nextVoiceRef.current.stop(80);
+        nextVoiceRef.current = null;
+      }
+      if (nextBlipTimer.current) clearTimeout(nextBlipTimer.current);
+      const ac = getAC();
+      const blip = new Voice(ac, modeRef.current);
+      nextVoiceRef.current = blip;
+      nextBlipTimer.current = setTimeout(() => {
+        blip.stop(120);
+        nextVoiceRef.current = null;
+      }, 250);
+    }
+  }, [doReset, doBaseChange]);
+
+  const handleEnd = useCallback((id: number) => {
+    const padIndex = touchMapRef.current.get(id);
+    touchMapRef.current.delete(id);
+    if (padIndex == null) return;
+
+    if (padIndex < 18) {
+      // CHORD pad
+      const voice = chordVoicesRef.current.get(padIndex);
+      if (voice) {
+        voice.stop(120);
+        chordVoicesRef.current.delete(padIndex);
+      }
+      litChordRef.current.delete(padIndex);
+    }
+    // NEXT pads: flash self-expires, nothing to release
   }, []);
 
   // ── Resize ──
   const resize = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    canvas.width = window.innerWidth;
+    canvas.width  = window.innerWidth;
     canvas.height = window.innerHeight;
-    particlesRef.current = makeParticles(55, window.innerWidth, window.innerHeight);
+    padsRef.current = buildPads(canvas.width, canvas.height);
+    setPortrait(window.innerHeight > window.innerWidth);
   }, []);
 
   // ── Mount ──
   useEffect(() => {
     resize();
     window.addEventListener("resize", resize);
-
     rafRef.current = requestAnimationFrame(draw);
 
-    // Touch events
+    // Touch
     const onTouchStart = (e: TouchEvent) => {
       e.preventDefault();
-      Array.from(e.changedTouches).forEach(t => onStart(String(t.identifier), t.clientX, t.clientY));
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      e.preventDefault();
-      Array.from(e.changedTouches).forEach(t => onMove(String(t.identifier), t.clientX, t.clientY));
+      Array.from(e.changedTouches).forEach(t =>
+        handleStart(t.identifier, t.clientX, t.clientY)
+      );
     };
     const onTouchEnd = (e: TouchEvent) => {
       e.preventDefault();
-      Array.from(e.changedTouches).forEach(t => onEnd(String(t.identifier)));
+      Array.from(e.changedTouches).forEach(t => handleEnd(t.identifier));
     };
+    const onTouchMove = (e: TouchEvent) => { e.preventDefault(); };
 
     window.addEventListener("touchstart",  onTouchStart,  { passive: false });
     window.addEventListener("touchmove",   onTouchMove,   { passive: false });
@@ -419,23 +547,10 @@ export default function Home() {
     window.addEventListener("touchcancel", onTouchEnd,    { passive: false });
 
     // Mouse fallback
-    let mouseDown = false;
-    const onMouseDown = (e: MouseEvent) => {
-      mouseDown = true;
-      onStart("mouse", e.clientX, e.clientY);
-    };
-    const onMouseMove = (e: MouseEvent) => {
-      if (!mouseDown) return;
-      onMove("mouse", e.clientX, e.clientY);
-    };
-    const onMouseUp = (e: MouseEvent) => {
-      if (!mouseDown) return;
-      mouseDown = false;
-      onEnd("mouse");
-    };
-
+    const MOUSE_ID = -1;
+    const onMouseDown = (e: MouseEvent) => handleStart(MOUSE_ID, e.clientX, e.clientY);
+    const onMouseUp   = (e: MouseEvent) => handleEnd(MOUSE_ID);
     window.addEventListener("mousedown", onMouseDown);
-    window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup",   onMouseUp);
 
     return () => {
@@ -446,24 +561,48 @@ export default function Home() {
       window.removeEventListener("touchend",    onTouchEnd);
       window.removeEventListener("touchcancel", onTouchEnd);
       window.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup",   onMouseUp);
-      if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
-      // Stop all voices
-      Array.from(voicesRef.current.values()).forEach(v => v.stop());
+      Array.from(chordVoicesRef.current.values()).forEach(v => v.stop(0));
+      if (nextVoiceRef.current) nextVoiceRef.current.stop(0);
     };
-  }, [resize, draw, onStart, onMove, onEnd]);
+  }, [resize, draw, handleStart, handleEnd]);
+
+  // Re-start draw loop when display changes (so text updates)
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(draw);
+  }, [draw]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        display: "block",
-        position: "fixed",
-        inset: 0,
-        touchAction: "none",
-        cursor: "crosshair",
-      }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: "block",
+          position: "fixed",
+          inset: 0,
+          touchAction: "none",
+          cursor: "default",
+        }}
+      />
+      {portrait && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(10,12,16,0.92)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#8ab4cc",
+          fontFamily: "'DM Sans', sans-serif",
+          fontSize: 16,
+          letterSpacing: "0.05em",
+          pointerEvents: "none",
+          zIndex: 10,
+        }}>
+          Rotate device to landscape to play
+        </div>
+      )}
+    </>
   );
 }
