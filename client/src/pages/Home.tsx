@@ -54,9 +54,11 @@ class Voice {
     this.filter.connect(this.masterGain);
     this.masterGain.connect(ctx.destination);
 
-    const ratios  = [1, 1.5, 2, 3];
-    const gains   = [1, 0.35, 0.2, 0.08];
-    const types: OscillatorType[] = ["sine", "triangle", "sine", "sine"];
+    // Only integer multiples — no ×1.5 (non-harmonic partial causes beating
+    // against other just-tuned voices). Gain redistributed to stay full.
+    const ratios  = [1, 2, 3, 4];
+    const gains   = [1, 0.35, 0.15, 0.07];
+    const types: OscillatorType[] = ["sine", "sine", "sine", "sine"];
 
     for (let i = 0; i < ratios.length; i++) {
       const osc = ctx.createOscillator();
@@ -77,7 +79,7 @@ class Voice {
   retune(freq: number, rampMs = 30) {
     const now = this.ctx.currentTime;
     const ramp = rampMs / 1000;
-    const baseRatios = [1, 1.5, 2, 3];
+    const baseRatios = [1, 2, 3, 4];
     for (let i = 0; i < this.oscs.length; i++) {
       this.oscs[i].osc.frequency.linearRampToValueAtTime(freq * baseRatios[i], now + ramp);
     }
