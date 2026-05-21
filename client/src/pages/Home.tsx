@@ -251,7 +251,7 @@ export default function Home() {
     });
 
     // Touch circles
-    for (const [, dot] of dotsRef.current) {
+    for (const [, dot] of Array.from(dotsRef.current)) {
       const age = (now - dot.born) / 200;
       // Spring overshoot: 0.5 → 1.08 → 1.0
       let sc = dot.scale;
@@ -450,7 +450,7 @@ export default function Home() {
       window.removeEventListener("mouseup",   onMouseUp);
       if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
       // Stop all voices
-      for (const v of voicesRef.current.values()) v.stop();
+      Array.from(voicesRef.current.values()).forEach(v => v.stop());
     };
   }, [resize, draw, onStart, onMove, onEnd]);
 
