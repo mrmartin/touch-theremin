@@ -205,7 +205,6 @@ export default function Home() {
 
   // Audio
   const audioCtxRef   = useRef<AudioContext | null>(null);
-  const modeRef       = useRef<number>(220);
   const baseRef       = useRef<number>(220);
   const modeNumRef    = useRef<number>(1);
   const modeDenRef    = useRef<number>(1);
@@ -250,17 +249,17 @@ export default function Home() {
     return audioCtxRef.current;
   }
 
-  // ── Sync modeRef from fraction ──
-  function syncMode() {
-    modeRef.current = baseRef.current * modeNumRef.current / modeDenRef.current;
+  // ── Exact frequency from integers: base × (modeNum/modeDen) × (padNum/padDen) ──
+  function exactFreq(padNum: number, padDen: number): number {
+    return baseRef.current * modeNumRef.current * padNum
+         / (modeDenRef.current * padDen);
   }
 
-  // ── Retune all held CHORD voices ──
+  // ── Retune all held CHORD voices from integers ──
   function retuneChord(rampMs = 30) {
     for (const [padIdx, voice] of Array.from(chordVoicesRef.current)) {
-      const ri = padIdx; // chord pad index 0–17 == ratioIndex
-      const [num, den] = RATIOS[ri];
-      voice.retune(modeRef.current * (num / den), rampMs);
+      const [pNum, pDen] = RATIOS[padIdx];
+      voice.retune(exactFreq(pNum, pDen), rampMs);
     }
   }
 
@@ -277,7 +276,6 @@ export default function Home() {
   const doReset = useCallback(() => {
     modeNumRef.current = 1;
     modeDenRef.current = 1;
-    syncMode();
     retuneChord(30);
     pushDisplay();
   }, []);
@@ -285,7 +283,6 @@ export default function Home() {
   // ── BASE ±1 ──
   const doBaseChange = useCallback((delta: number) => {
     baseRef.current = Math.max(20, baseRef.current + delta);
-    syncMode();
     retuneChord(30);
     pushDisplay();
   }, []);
@@ -499,9 +496,9 @@ export default function Home() {
     touchMapRef.current.set(id, pad.index);
 
     if (pad.row === "chord") {
-      // Sound the note
-      const [num, den] = RATIOS[pad.ratioIndex];
-      const freq = modeRef.current * (num / den);
+      // Sound the note — frequency computed purely from integers
+      const [pNum, pDen] = RATIOS[pad.ratioIndex];
+      const freq = exactFreq(pNum, pDen);
       const ac = getAC();
       const voice = new Voice(ac, freq);
       chordVoicesRef.current.set(pad.index, voice);
@@ -515,23 +512,22 @@ export default function Home() {
       const g = gcd(modeNumRef.current, modeDenRef.current);
       modeNumRef.current /= g;
       modeDenRef.current /= g;
-      syncMode();
       pushDisplay();
 
-      // Retune held chord
+      // Retune held chord — all frequencies recomputed from integers
       retuneChord(30);
 
       // Flash
       flashRef.current.set(pad.index, performance.now() + 150);
 
-      // Blip at new MODE
+      // Blip at new MODE (ratio 1/1 relative to mode = base × modeNum/modeDen)
       if (nextVoiceRef.current) {
         nextVoiceRef.current.stop(80);
         nextVoiceRef.current = null;
       }
       if (nextBlipTimer.current) clearTimeout(nextBlipTimer.current);
       const ac = getAC();
-      const blip = new Voice(ac, modeRef.current);
+      const blip = new Voice(ac, exactFreq(1, 1));
       nextVoiceRef.current = blip;
       nextBlipTimer.current = setTimeout(() => {
         blip.stop(120);
