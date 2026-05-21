@@ -117,8 +117,13 @@
   * {
     @apply border-border outline-ring/50;
   }
-  body {
-    @apply bg-background text-foreground;
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    height: 100%;
+    background: #060810;
+    @apply text-foreground;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
