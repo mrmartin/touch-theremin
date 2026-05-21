@@ -569,11 +569,10 @@ export default function Home() {
     setPortrait(window.innerHeight > window.innerWidth);
   }, []);
 
-  // ── Mount ──
+  // ── Mount: event listeners — run once only ──
   useEffect(() => {
     resize();
     window.addEventListener("resize", resize);
-    rafRef.current = requestAnimationFrame(draw);
 
     // Touch
     const onTouchStart = (e: TouchEvent) => {
@@ -600,8 +599,8 @@ export default function Home() {
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mouseup",   onMouseUp);
 
+    // Cleanup only on true unmount — stop all voices
     return () => {
-      cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", resize);
       window.removeEventListener("touchstart",  onTouchStart);
       window.removeEventListener("touchmove",   onTouchMove);
@@ -612,12 +611,14 @@ export default function Home() {
       Array.from(chordVoicesRef.current.values()).forEach(v => v.stop(0));
       if (nextVoiceRef.current) nextVoiceRef.current.stop(0);
     };
-  }, [resize, draw, handleStart, handleEnd]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — handlers use refs, never stale
 
-  // Re-start draw loop when display changes (so text updates)
+  // ── RAF loop: restart whenever draw (or display) changes ──
   useEffect(() => {
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(draw);
+    return () => { cancelAnimationFrame(rafRef.current); };
   }, [draw]);
 
   return (
