@@ -18,17 +18,15 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 
 // ─── Ratios ───────────────────────────────────────────────────────────────────
-// 35 entries: descending fractions on the left, 1/1 in the centre (index 17),
-// ascending (reciprocal) fractions on the right.
+// 19 entries: 9 descending on the left, 1/1 in the centre (index 9),
+// 9 ascending (reciprocal) on the right.
 const RATIOS: [number, number][] = [
-  // ← down (index 0–16)
-  [1,7],[1,6],[1,5],[1,4],[2,7],[1,3],[2,5],[3,7],[1,2],
-  [4,7],[3,5],[2,3],[5,7],[3,4],[4,5],[5,6],[6,7],
-  // centre (index 17)
+  // ← down (index 0–8)
+  [1,4],[1,3],[2,5],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],
+  // centre (index 9)
   [1,1],
-  // up → (index 18–34)
-  [7,6],[6,5],[5,4],[4,3],[7,5],[3,2],[8,5],[5,3],[7,4],
-  [2,1],[5,2],[3,1],[7,2],[4,1],[5,1],[6,1],[7,1],
+  // up → (index 10–18)
+  [7,6],[6,5],[5,4],[4,3],[3,2],[5,3],[7,4],[2,1],[3,1],
 ];
 
 // ─── GCD ─────────────────────────────────────────────────────────────────────
@@ -106,8 +104,8 @@ interface Pad {
   x: number; y: number; w: number; h: number;
 }
 
-const N_PADS = 35; // total pads per row
-const CENTER_IDX = 17; // index of 1/1
+const N_PADS = 19; // total pads per row
+const CENTER_IDX = 9; // index of 1/1
 
 function buildPads(W: number, H: number): Pad[] {
   const topBand = Math.round(H * 0.08);
