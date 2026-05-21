@@ -38,12 +38,27 @@ function gcd(a: number, b: number): number {
 }
 
 // ─── Voice ────────────────────────────────────────────────────────────────────
+// Partial stacks indexed by count (1 = pure sine, 2 = ×1+×2, 3 = ×1+×2+×3, 4 = full)
+const PARTIAL_STACKS: { ratios: number[]; gains: number[] }[] = [
+  { ratios: [1],       gains: [1] },                         // 1 partial
+  { ratios: [1, 2],    gains: [1, 0.40] },                   // 2 partials
+  { ratios: [1, 2, 3], gains: [1, 0.35, 0.15] },             // 3 partials
+  { ratios: [1, 2, 3, 4], gains: [1, 0.35, 0.15, 0.07] },   // 4 partials
+];
+
+// How many partials to use given the current chord size
+function partialsForChordSize(n: number): number {
+  if (n >= 4) return 1; // pure sine — no partials to collide
+  if (n === 3) return 2; // ×1 + ×2 only
+  return 4;             // 1 or 2 notes: full stack
+}
+
 class Voice {
   masterGain: GainNode;
   filter: BiquadFilterNode;
   oscs: Array<{ osc: OscillatorNode; g: GainNode }> = [];
 
-  constructor(private ctx: AudioContext, freq: number) {
+  constructor(private ctx: AudioContext, freq: number, partialCount = 4) {
     this.masterGain = ctx.createGain();
     this.masterGain.gain.setValueAtTime(0.0001, ctx.currentTime);
 
@@ -54,18 +69,13 @@ class Voice {
     this.filter.connect(this.masterGain);
     this.masterGain.connect(ctx.destination);
 
-    // Only integer multiples — no ×1.5 (non-harmonic partial causes beating
-    // against other just-tuned voices). Gain redistributed to stay full.
-    const ratios  = [1, 2, 3, 4];
-    const gains   = [1, 0.35, 0.15, 0.07];
-    const types: OscillatorType[] = ["sine", "sine", "sine", "sine"];
-
-    for (let i = 0; i < ratios.length; i++) {
+    const stack = PARTIAL_STACKS[Math.min(partialCount, 4) - 1];
+    for (let i = 0; i < stack.ratios.length; i++) {
       const osc = ctx.createOscillator();
-      osc.type = types[i];
-      osc.frequency.setValueAtTime(freq * ratios[i], ctx.currentTime);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq * stack.ratios[i], ctx.currentTime);
       const g = ctx.createGain();
-      g.gain.value = gains[i];
+      g.gain.value = stack.gains[i];
       osc.connect(g);
       g.connect(this.filter);
       osc.start();
@@ -79,6 +89,7 @@ class Voice {
   retune(freq: number, rampMs = 30) {
     const now = this.ctx.currentTime;
     const ramp = rampMs / 1000;
+    // baseRatios matches however many oscs were created
     const baseRatios = [1, 2, 3, 4];
     for (let i = 0; i < this.oscs.length; i++) {
       this.oscs[i].osc.frequency.linearRampToValueAtTime(freq * baseRatios[i], now + ramp);
@@ -262,6 +273,23 @@ export default function Home() {
     for (const [padIdx, voice] of Array.from(chordVoicesRef.current)) {
       const [pNum, pDen] = RATIOS[padIdx];
       voice.retune(exactFreq(pNum, pDen), rampMs);
+    }
+  }
+
+  // ── Rebuild all chord voices with the correct partial count for current size ──
+  // Called whenever the number of held notes changes so voices shed/gain partials.
+  function rebuildChord() {
+    const ac = getAC();
+    const n = chordVoicesRef.current.size;
+    const pc = partialsForChordSize(n);
+    for (const [padIdx, oldVoice] of Array.from(chordVoicesRef.current)) {
+      const [pNum, pDen] = RATIOS[padIdx];
+      const freq = exactFreq(pNum, pDen);
+      // Fade out old voice quickly
+      oldVoice.stop(40);
+      // Start new voice with updated partial count, no attack click
+      const newVoice = new Voice(ac, freq, pc);
+      chordVoicesRef.current.set(padIdx, newVoice);
     }
   }
 
@@ -498,13 +526,14 @@ export default function Home() {
     touchMapRef.current.set(id, pad.index);
 
     if (pad.row === "chord") {
-      // Sound the note — frequency computed purely from integers
+      // Add new note then rebuild all voices for the new chord size
       const [pNum, pDen] = RATIOS[pad.ratioIndex];
       const freq = exactFreq(pNum, pDen);
       const ac = getAC();
-      const voice = new Voice(ac, freq);
-      chordVoicesRef.current.set(pad.index, voice);
+      // Temporarily insert a placeholder so size is correct before rebuild
+      chordVoicesRef.current.set(pad.index, new Voice(ac, freq, 1));
       litChordRef.current.add(pad.index);
+      rebuildChord();
 
     } else {
       // NEXT: multiply MODE
@@ -544,13 +573,15 @@ export default function Home() {
     if (padIndex == null) return;
 
     if (padIndex < N_PADS) {
-      // CHORD pad
+      // CHORD pad — remove note, then rebuild remaining voices with more partials
       const voice = chordVoicesRef.current.get(padIndex);
       if (voice) {
         voice.stop(120);
         chordVoicesRef.current.delete(padIndex);
       }
       litChordRef.current.delete(padIndex);
+      // Rebuild remaining voices now that chord is smaller
+      rebuildChord();
     }
     // NEXT pads: flash self-expires, nothing to release
   }, []);
@@ -580,13 +611,13 @@ export default function Home() {
     if (newIndex == null || !pad) return;
 
     if (pad.row === "chord") {
-      // Start voice on the new pad
+      // Insert placeholder then rebuild all voices for current chord size
       const [pNum, pDen] = RATIOS[pad.ratioIndex];
       const freq = exactFreq(pNum, pDen);
       const ac = getAC();
-      const voice = new Voice(ac, freq);
-      chordVoicesRef.current.set(newIndex, voice);
+      chordVoicesRef.current.set(newIndex, new Voice(ac, freq, 1));
       litChordRef.current.add(newIndex);
+      rebuildChord();
     } else {
       // Sliding into a NEXT pad fires it once
       const [num, den] = RATIOS[pad.ratioIndex];
