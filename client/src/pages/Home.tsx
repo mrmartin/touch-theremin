@@ -18,9 +18,17 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 
 // ─── Ratios ───────────────────────────────────────────────────────────────────
+// 35 entries: descending fractions on the left, 1/1 in the centre (index 17),
+// ascending (reciprocal) fractions on the right.
 const RATIOS: [number, number][] = [
+  // ← down (index 0–16)
   [1,7],[1,6],[1,5],[1,4],[2,7],[1,3],[2,5],[3,7],[1,2],
-  [4,7],[3,5],[2,3],[5,7],[3,4],[4,5],[5,6],[6,7],[1,1],
+  [4,7],[3,5],[2,3],[5,7],[3,4],[4,5],[5,6],[6,7],
+  // centre (index 17)
+  [1,1],
+  // up → (index 18–34)
+  [7,6],[6,5],[5,4],[4,3],[7,5],[3,2],[8,5],[5,3],[7,4],
+  [2,1],[5,2],[3,1],[7,2],[4,1],[5,1],[6,1],[7,1],
 ];
 
 // ─── GCD ─────────────────────────────────────────────────────────────────────
@@ -98,14 +106,17 @@ interface Pad {
   x: number; y: number; w: number; h: number;
 }
 
+const N_PADS = 35; // total pads per row
+const CENTER_IDX = 17; // index of 1/1
+
 function buildPads(W: number, H: number): Pad[] {
-  const topBand   = Math.round(H * 0.08);
-  const rowH      = Math.round((H - topBand) / 2);
-  const padW      = W / 18;
+  const topBand = Math.round(H * 0.08);
+  const rowH    = Math.round((H - topBand) / 2);
+  const padW    = W / N_PADS;
   const pads: Pad[] = [];
   const gap = 2;
 
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < N_PADS; i++) {
     pads.push({
       index: i,
       row: "chord",
@@ -116,9 +127,9 @@ function buildPads(W: number, H: number): Pad[] {
       h: rowH - gap,
     });
   }
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < N_PADS; i++) {
     pads.push({
-      index: i + 18,
+      index: i + N_PADS,
       row: "next",
       ratioIndex: i,
       x: i * padW + gap / 2,
@@ -158,21 +169,30 @@ function roundRect(
 
 // ─── Colours ──────────────────────────────────────────────────────────────────
 const COLOR = {
-  bg:          "#0d0f14",
-  chordBase:   "#1a2a3a",
-  chordLit:    "#2a7fff",
-  chordBorder: "#1e3a5a",
-  nextBase:    "#1a2e1a",
-  nextLit:     "#22cc55",
-  nextBorder:  "#1e4a1e",
-  text:        "#8ab4cc",
-  textBright:  "#d0e8f8",
-  ratioText:   "#c8dce8",
-  ratioTextLit:"#ffffff",
-  topBg:       "#0a0c10",
-  btnBg:       "#1e2a38",
-  btnHover:    "#2a3a50",
-  btnText:     "#9ab8cc",
+  bg:           "#0d0f14",
+  // CHORD row
+  chordBase:    "#1a2a3a",
+  chordLit:     "#2a7fff",
+  chordBorder:  "#1e3a5a",
+  // CHORD centre (1/1)
+  chordCenter:  "#1a2040",
+  chordCenterBorder: "#3a4a7a",
+  // NEXT row
+  nextBase:     "#1a2e1a",
+  nextLit:      "#22cc55",
+  nextBorder:   "#1e4a1e",
+  // NEXT centre (1/1)
+  nextCenter:   "#1a2e20",
+  nextCenterBorder: "#3a6a3a",
+  text:         "#8ab4cc",
+  textBright:   "#d0e8f8",
+  ratioText:    "#c8dce8",
+  ratioTextLit: "#ffffff",
+  ratioTextCenter: "#aaccff",
+  topBg:        "#0a0c10",
+  btnBg:        "#1e2a38",
+  btnHover:     "#2a3a50",
+  btnText:      "#9ab8cc",
 };
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -293,31 +313,58 @@ export default function Home() {
     // ── Draw pads ──
     const pads = padsRef.current;
     for (const pad of pads) {
-      const isChord = pad.row === "chord";
-      const isLit   = isChord
+      const isChord  = pad.row === "chord";
+      const isCenter = pad.ratioIndex === CENTER_IDX;
+      const isLit    = isChord
         ? litChordRef.current.has(pad.index)
         : (flashRef.current.get(pad.index) ?? 0) > now;
 
-      const baseColor   = isChord ? COLOR.chordBase   : COLOR.nextBase;
-      const litColor    = isChord ? COLOR.chordLit    : COLOR.nextLit;
-      const borderColor = isChord ? COLOR.chordBorder : COLOR.nextBorder;
+      let baseColor: string;
+      let borderColor: string;
+      if (isCenter) {
+        baseColor   = isChord ? COLOR.chordCenter      : COLOR.nextCenter;
+        borderColor = isChord ? COLOR.chordCenterBorder: COLOR.nextCenterBorder;
+      } else {
+        baseColor   = isChord ? COLOR.chordBase   : COLOR.nextBase;
+        borderColor = isChord ? COLOR.chordBorder : COLOR.nextBorder;
+      }
+      const litColor = isChord ? COLOR.chordLit : COLOR.nextLit;
 
       roundRect(ctx, pad.x, pad.y, pad.w, pad.h, 5);
       ctx.fillStyle = isLit ? litColor : baseColor;
       ctx.fill();
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = isLit ? litColor : borderColor;
+      ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
       ctx.stroke();
 
       // Ratio label
       const [num, den] = RATIOS[pad.ratioIndex];
       const label = `${num}/${den}`;
-      const fontSize = Math.max(10, Math.min(14, pad.w * 0.38));
+      const fontSize = Math.max(9, Math.min(13, pad.w * 0.36));
       ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillStyle = isLit ? COLOR.ratioTextLit : COLOR.ratioText;
+      ctx.fillStyle = isLit
+        ? COLOR.ratioTextLit
+        : isCenter ? COLOR.ratioTextCenter : COLOR.ratioText;
       ctx.fillText(label, pad.x + pad.w / 2, pad.y + pad.h / 2);
+    }
+
+    // ── Direction markers below CHORD row, above NEXT row ──
+    if (pads.length > 0) {
+      const cp0  = pads[0];
+      const cpC  = pads[CENTER_IDX];
+      const midY = cpC.y + cpC.h + 1;
+      const markerH = pads[N_PADS].y - midY - 1; // gap between rows
+      if (markerH > 0) {
+        // left arrow area
+        ctx.fillStyle = "rgba(80,140,220,0.18)";
+        ctx.fillRect(cp0.x, midY, cpC.x - cp0.x, markerH);
+        // right arrow area
+        const cpLast = pads[N_PADS - 1];
+        ctx.fillStyle = "rgba(80,200,120,0.18)";
+        ctx.fillRect(cpC.x + cpC.w, midY, (cpLast.x + cpLast.w) - (cpC.x + cpC.w), markerH);
+      }
     }
 
     // ── Row labels ──
@@ -500,7 +547,7 @@ export default function Home() {
     touchMapRef.current.delete(id);
     if (padIndex == null) return;
 
-    if (padIndex < 18) {
+    if (padIndex < N_PADS) {
       // CHORD pad
       const voice = chordVoicesRef.current.get(padIndex);
       if (voice) {
