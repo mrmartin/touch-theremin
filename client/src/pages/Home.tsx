@@ -555,6 +555,58 @@ export default function Home() {
     // NEXT pads: flash self-expires, nothing to release
   }, []);
 
+  // ── Move: slide finger to a new pad ──
+  const handleMove = useCallback((id: number, px: number, py: number) => {
+    const prevIndex = touchMapRef.current.get(id);
+    if (prevIndex === undefined) return; // touch not tracked
+
+    const pad = hitPad(padsRef.current, px, py);
+    const newIndex = pad ? pad.index : null;
+
+    if (newIndex === prevIndex) return; // still on the same pad, nothing to do
+
+    // Release the old pad if it was a CHORD pad
+    if (prevIndex != null && prevIndex < N_PADS) {
+      const voice = chordVoicesRef.current.get(prevIndex);
+      if (voice) {
+        voice.stop(60);
+        chordVoicesRef.current.delete(prevIndex);
+      }
+      litChordRef.current.delete(prevIndex);
+    }
+
+    touchMapRef.current.set(id, newIndex);
+
+    if (newIndex == null || !pad) return;
+
+    if (pad.row === "chord") {
+      // Start voice on the new pad
+      const [pNum, pDen] = RATIOS[pad.ratioIndex];
+      const freq = exactFreq(pNum, pDen);
+      const ac = getAC();
+      const voice = new Voice(ac, freq);
+      chordVoicesRef.current.set(newIndex, voice);
+      litChordRef.current.add(newIndex);
+    } else {
+      // Sliding into a NEXT pad fires it once
+      const [num, den] = RATIOS[pad.ratioIndex];
+      modeNumRef.current *= num;
+      modeDenRef.current *= den;
+      const g = gcd(modeNumRef.current, modeDenRef.current);
+      modeNumRef.current /= g;
+      modeDenRef.current /= g;
+      pushDisplay();
+      retuneChord(30);
+      flashRef.current.set(newIndex, performance.now() + 150);
+      if (nextVoiceRef.current) { nextVoiceRef.current.stop(80); nextVoiceRef.current = null; }
+      if (nextBlipTimer.current) clearTimeout(nextBlipTimer.current);
+      const ac = getAC();
+      const blip = new Voice(ac, exactFreq(1, 1));
+      nextVoiceRef.current = blip;
+      nextBlipTimer.current = setTimeout(() => { blip.stop(120); nextVoiceRef.current = null; }, 250);
+    }
+  }, []);
+
   // ── Resize ──
   const resize = useCallback(() => {
     const canvas = canvasRef.current;
@@ -581,7 +633,12 @@ export default function Home() {
       e.preventDefault();
       Array.from(e.changedTouches).forEach(t => handleEnd(t.identifier));
     };
-    const onTouchMove = (e: TouchEvent) => { e.preventDefault(); };
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      Array.from(e.changedTouches).forEach(t =>
+        handleMove(t.identifier, t.clientX, t.clientY)
+      );
+    };
 
     window.addEventListener("touchstart",  onTouchStart,  { passive: false });
     window.addEventListener("touchmove",   onTouchMove,   { passive: false });
@@ -592,8 +649,10 @@ export default function Home() {
     const MOUSE_ID = -1;
     const onMouseDown = (e: MouseEvent) => handleStart(MOUSE_ID, e.clientX, e.clientY);
     const onMouseUp   = (e: MouseEvent) => handleEnd(MOUSE_ID);
+    const onMouseMove = (e: MouseEvent) => { if (e.buttons & 1) handleMove(MOUSE_ID, e.clientX, e.clientY); };
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mouseup",   onMouseUp);
+    window.addEventListener("mousemove", onMouseMove);
 
     // Cleanup only on true unmount — stop all voices
     return () => {
@@ -604,6 +663,7 @@ export default function Home() {
       window.removeEventListener("touchcancel", onTouchEnd);
       window.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mouseup",   onMouseUp);
+      window.removeEventListener("mousemove", onMouseMove);
       Array.from(chordVoicesRef.current.values()).forEach(v => v.stop(0));
       if (nextVoiceRef.current) nextVoiceRef.current.stop(0);
     };
