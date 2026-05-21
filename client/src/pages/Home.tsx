@@ -402,15 +402,15 @@ export default function Home() {
     // Touch events
     const onTouchStart = (e: TouchEvent) => {
       e.preventDefault();
-      for (const t of e.changedTouches) onStart(String(t.identifier), t.clientX, t.clientY);
+      Array.from(e.changedTouches).forEach(t => onStart(String(t.identifier), t.clientX, t.clientY));
     };
     const onTouchMove = (e: TouchEvent) => {
       e.preventDefault();
-      for (const t of e.changedTouches) onMove(String(t.identifier), t.clientX, t.clientY);
+      Array.from(e.changedTouches).forEach(t => onMove(String(t.identifier), t.clientX, t.clientY));
     };
     const onTouchEnd = (e: TouchEvent) => {
       e.preventDefault();
-      for (const t of e.changedTouches) onEnd(String(t.identifier));
+      Array.from(e.changedTouches).forEach(t => onEnd(String(t.identifier)));
     };
 
     window.addEventListener("touchstart",  onTouchStart,  { passive: false });
