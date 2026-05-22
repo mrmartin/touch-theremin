@@ -1,21 +1,17 @@
 /**
- * Prime Mover — Just-Intonation MODE/CHORD Instrument
+ * Relative Notation Organ by Martin Kolář
  *
- * Design: minimal dark grid, two rows of 18 pads.
+ * A just-intonation polyphonic instrument.
  * - CHORD row (top half): hold pads to sustain notes at MODE × ratio
- * - NEXT row (bottom half): tap to multiply MODE by that pad's ratio; transposes held chord
- * - Top band: BASE / MODE display, RESET button, BASE ±1 Hz controls
+ * - NEXT row (bottom half): tap to multiply MODE by that pad’s ratio; transposes held chord
+ * - Top band: BASE / MODE display, RESET, BASE ±1 Hz controls, About link
  *
- * Audio: Web Audio API
- * - Four-oscillator Voice (×1 sine, ×1.5 triangle, ×2 sine, ×3 sine) with decreasing gain
- * - 40 ms attack ramp, 120 ms release ramp — no clicks
- * - NEXT tap: 250 ms blip at new MODE frequency
- * - MODE change: 30 ms retune ramp on all held CHORD voices
- *
+ * Audio: Web Audio API — harmonic-only partials, dynamic partial reduction by chord size.
  * State: all real-time data in useRef; only display fraction in useState.
  */
 
 import { useEffect, useRef, useCallback, useState } from "react";
+import { useLocation } from "wouter";
 
 // ─── Ratios ───────────────────────────────────────────────────────────────────
 // 19 entries: 9 descending on the left, 1/1 in the centre (index 9),
@@ -240,15 +236,19 @@ export default function Home() {
   const padsRef = useRef<Pad[]>([]);
 
   // UI control hit areas (built each draw)
-  const resetBtnRef   = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const resetBtnRef    = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const basePlusBtnRef  = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const baseMinusBtnRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const aboutBtnRef    = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // Display state (React — drives text re-render)
   const [display, setDisplay] = useState<DisplayState>({ base: 220, modeNum: 1, modeDen: 1 });
 
   // Portrait warning
   const [portrait, setPortrait] = useState(false);
+
+  // Navigation
+  const [, setLocation] = useLocation();
 
   // RAF
   const rafRef = useRef<number>(0);
@@ -428,9 +428,17 @@ export default function Home() {
     ctx.fillStyle = COLOR.textBright;
     ctx.fillText(`${display.modeNum}/${display.modeDen}`, modeX + 42, topBand / 2);
 
-    // Right-side controls: [−] [+] [RESET]
+    // Instrument name — centred in the remaining space
+    const titleFontSize = Math.max(9, Math.min(11, topBand * 0.40));
+    ctx.font = `500 ${titleFontSize}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(120,160,200,0.5)";
+    ctx.fillText("Relative Notation Organ by Martin Kol\u00e1\u0159", W / 2, topBand / 2);
+
+    // Right-side controls: [?] [−] [+] [RESET]
     const resetW  = 52;
     const arrowW  = 28;
+    const aboutW  = 28;
     const spacing = 6;
     let rx = W - margin;
 
@@ -449,6 +457,24 @@ export default function Home() {
     ctx.textBaseline = "middle";
     ctx.fillStyle = COLOR.btnText;
     ctx.fillText("RESET", resetBtn.x + resetBtn.w / 2, resetBtn.y + resetBtn.h / 2);
+
+    rx -= spacing;
+
+    // ABOUT ? button
+    rx -= aboutW;
+    const aboutBtn = { x: rx, y: btnY, w: aboutW, h: btnH };
+    aboutBtnRef.current = aboutBtn;
+    roundRect(ctx, aboutBtn.x, aboutBtn.y, aboutBtn.w, aboutBtn.h, btnR);
+    ctx.fillStyle = COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.font = `700 ${Math.max(11, Math.min(14, topBand * 0.55))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLOR.btnText;
+    ctx.fillText("?", aboutBtn.x + aboutBtn.w / 2, aboutBtn.y + aboutBtn.h / 2);
 
     rx -= spacing;
 
@@ -503,6 +529,11 @@ export default function Home() {
     // Check top-band buttons first
     if (hitBtn(resetBtnRef.current, px, py)) {
       doReset();
+      touchMapRef.current.set(id, null);
+      return;
+    }
+    if (hitBtn(aboutBtnRef.current, px, py)) {
+      setLocation("/about");
       touchMapRef.current.set(id, null);
       return;
     }
