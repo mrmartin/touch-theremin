@@ -150,17 +150,67 @@ function buildPads(W: number, H: number): Pad[] {
 
   const pads: Pad[] = [];
 
-  // CHORD pads (indices 0..N_PADS-1)
+  // ── CHORD pads: piano-style layout ──
+  // White keys are full height and evenly spaced.
+  // Black keys are 60% height and 70% width, centred over the boundary
+  // between the two adjacent white keys they sit between.
+
+  const whiteCount = PIANO_KEYS.filter(k => k === "white").length; // 15
+  const whiteW     = W / whiteCount;  // width of each white key slot
+  const blackW     = whiteW * 0.70;
+  const blackH     = chordH * 0.60;
+
+  // Build an ordered list of white-key x positions (left edge of each slot)
+  const whiteXs: number[] = [];
   for (let i = 0; i < N_PADS; i++) {
+    if (PIANO_KEYS[i] === "white") whiteXs.push(whiteXs.length * whiteW);
+  }
+
+  // Map ratio index → white key slot index (for black key positioning)
+  let whiteSlot = 0;
+  const slotOf: number[] = new Array(N_PADS).fill(0);
+  for (let i = 0; i < N_PADS; i++) {
+    slotOf[i] = whiteSlot;
+    if (PIANO_KEYS[i] === "white") whiteSlot++;
+  }
+
+  // White keys first (drawn behind black keys)
+  let wi = 0;
+  for (let i = 0; i < N_PADS; i++) {
+    if (PIANO_KEYS[i] !== "white") continue;
     pads.push({
       index: i,
       row: "chord",
       shape: "rect",
       ratioIndex: i,
-      x: i * padW + gap / 2,
-      y: chordY + gap / 2,
-      w: padW - gap,
-      h: chordH - gap,
+      x: wi * whiteW + gap / 2,
+      y: chordY,
+      w: whiteW - gap,
+      h: chordH,
+    });
+    wi++;
+  }
+
+  // Black keys on top (drawn in front)
+  for (let i = 0; i < N_PADS; i++) {
+    if (PIANO_KEYS[i] !== "black") continue;
+    // Centre the black key between the white key to its left and the one to its right.
+    // The left white key is slotOf[i]-1 (the last white before this black),
+    // the right white key is slotOf[i] (the next white after this black).
+    const leftSlot  = slotOf[i] - 1;
+    const rightSlot = slotOf[i];
+    const leftEdge  = leftSlot  >= 0           ? leftSlot  * whiteW : 0;
+    const rightEdge = rightSlot < whiteCount   ? rightSlot * whiteW + whiteW : W;
+    const cx        = (leftEdge + rightEdge) / 2;
+    pads.push({
+      index: i,
+      row: "chord",
+      shape: "rect",
+      ratioIndex: i,
+      x: cx - blackW / 2,
+      y: chordY,
+      w: blackW,
+      h: blackH,
     });
   }
 
@@ -184,18 +234,59 @@ function buildPads(W: number, H: number): Pad[] {
 }
 
 function hitPad(pads: Pad[], px: number, py: number): Pad | null {
+  // Priority order: circles, then black CHORD keys (on top), then white CHORD keys
+  // Pass 1: circles and black chord keys
   for (const p of pads) {
     if (p.shape === "circle") {
       const cx = p.x + p.w / 2;
       const cy = p.y + p.h / 2;
       const r  = p.w / 2;
       if ((px - cx) ** 2 + (py - cy) ** 2 <= r * r) return p;
-    } else {
+    } else if (p.row === "chord" && PIANO_KEYS[p.ratioIndex] === "black") {
+      if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+    }
+  }
+  // Pass 2: white chord keys
+  for (const p of pads) {
+    if (p.row === "chord" && PIANO_KEYS[p.ratioIndex] === "white") {
       if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
     }
   }
   return null;
 }
+
+// ─── Piano key type per ratio index ─────────────────────────────────────────
+// Indexed 0–24 matching RATIOS. "white" = full-height ivory key; "black" = short dark key.
+const PIANO_KEYS: ("white" | "black")[] = [
+  // index 0–11 (down side, outermost first)
+  "white",  // 0  1/2    (C octave below)
+  "white",  // 1  6/11   (mirror A♯)
+  "black",  // 2  4/7    (mirror A)
+  "white",  // 3  3/5    (mirror G♯)
+  "black",  // 4  5/8    (mirror G)
+  "white",  // 5  2/3    (mirror F♯)
+  "black",  // 6  7/10   (mirror F)
+  "white",  // 7  3/4    (mirror E)
+  "white",  // 8  4/5    (mirror D♯)
+  "black",  // 9  5/6    (mirror D)
+  "white",  // 10 7/8    (mirror C♯)
+  "black",  // 11 11/12  (mirror C-side)
+  // index 12 (centre)
+  "white",  // 12 1/1    (C)
+  // index 13–24 (up side, innermost first)
+  "black",  // 13 12/11  (C♯)
+  "white",  // 14 8/7    (D)
+  "black",  // 15 6/5    (D♯)
+  "white",  // 16 5/4    (E)
+  "white",  // 17 4/3    (F)
+  "black",  // 18 10/7   (F♯)
+  "white",  // 19 3/2    (G)
+  "black",  // 20 8/5    (G♯)
+  "white",  // 21 5/3    (A)
+  "black",  // 22 7/4    (A♯)
+  "white",  // 23 11/6   (B)
+  "white",  // 24 2/1    (C octave above)
+];
 
 // ─── Ratio height → pad brightness [0..1] ───────────────────────────────────
 // Height = max(num, den) after GCD reduction. Drives background brightness.
@@ -896,43 +987,45 @@ export default function Home() {
         }
         ctx.fillText(label, cx, cy);
       } else {
-        // Draw rect (CHORD)
-        roundRect(ctx, pad.x, pad.y, pad.w, pad.h, 5);
-        ctx.fillStyle = baseColor;
+        // Draw CHORD key — piano style
+        const isBlack = PIANO_KEYS[pad.ratioIndex] === "black";
+        const radius  = isBlack ? 3 : 5;
+
+        let keyFill: string;
+        let keyStroke: string;
+        let labelColor: string;
+
+        if (isLit) {
+          keyFill   = COLOR.chordLit;
+          keyStroke = COLOR.chordLit;
+          labelColor = "#ffffff";
+        } else if (isBlack) {
+          keyFill   = isCenter ? "#1a1a2a" : "#111118";
+          keyStroke = "#333344";
+          labelColor = "rgba(180,200,220,0.75)";
+        } else {
+          // White key — ivory tint
+          keyFill   = isCenter ? "#e8f0ff" : "#f0f0ec";
+          keyStroke = "#b0b0aa";
+          labelColor = "#2a2a2a";
+        }
+
+        roundRect(ctx, pad.x, pad.y, pad.w, pad.h, radius);
+        ctx.fillStyle = keyFill;
         ctx.fill();
-        ctx.strokeStyle = borderColor;
-        ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
+        ctx.strokeStyle = keyStroke;
+        ctx.lineWidth = isCenter && !isLit ? 2 : 1;
         ctx.stroke();
+
+        // Label near the bottom of the key
         const label = `${num}/${den}`;
-        const fontSize = Math.max(9, Math.min(13, pad.w * 0.36));
+        const fontSize = Math.max(8, Math.min(13, pad.w * 0.38));
         ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
         ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        if (isLit) {
-          ctx.fillStyle = COLOR.ratioTextLit;
-        } else {
-          const lt = 0.45 + b * 0.55;
-          ctx.fillStyle = `rgb(${Math.round(lt*200)},${Math.round(lt*220)},${Math.round(lt*232)})`;
-        }
-        ctx.fillText(label, cx, cy);
-      }
-    }
-
-    // ── Direction markers: thin coloured strip between NEXT circles and CHORD rects ──
-    if (pads.length > 0) {
-      // NEXT circles are pads[N_PADS..2*N_PADS-1]; CHORD rects are pads[0..N_PADS-1]
-      const nextCenter = pads[N_PADS + CENTER_IDX]; // centre NEXT circle
-      const chordFirst = pads[0];
-      const chordLast  = pads[N_PADS - 1];
-      const stripTop   = nextCenter.y + nextCenter.h + 2;
-      const stripBot   = chordFirst.y - 2;
-      const stripH     = stripBot - stripTop;
-      if (stripH > 0) {
-        ctx.fillStyle = "rgba(80,140,220,0.15)";
-        ctx.fillRect(chordFirst.x, stripTop, nextCenter.x - chordFirst.x, stripH);
-        ctx.fillStyle = "rgba(80,200,120,0.15)";
-        ctx.fillRect(nextCenter.x + nextCenter.w, stripTop,
-          (chordLast.x + chordLast.w) - (nextCenter.x + nextCenter.w), stripH);
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = isLit ? "#ffffff" : labelColor;
+        const labelY = pad.y + pad.h - 6;
+        ctx.fillText(label, cx, labelY);
       }
     }
 
@@ -942,11 +1035,15 @@ export default function Home() {
       ctx.font = `500 ${labelFontSize}px 'DM Sans', sans-serif`;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      ctx.fillStyle = "rgba(138,180,204,0.45)";
-      const lastChord = pads[N_PADS - 1];
-      const lastNext  = pads[2 * N_PADS - 1];
-      ctx.fillText("CHORD", W - 4, lastChord.y + lastChord.h / 2);
+      ctx.fillStyle = "rgba(138,180,204,0.35)";
+      // NEXT circles: last pad in array (index 2*N_PADS-1)
+      const lastNext  = pads[pads.length - 1];
       ctx.fillText("NEXT",  W - 4, lastNext.y  + lastNext.h  / 2);
+      // CHORD label: use the centre white key (1/1) as vertical reference
+      const centerChord = pads.find(p => p.row === "chord" && p.ratioIndex === CENTER_IDX);
+      if (centerChord) {
+        ctx.fillText("CHORD", W - 4, centerChord.y + centerChord.h / 2);
+      }
     }
 
     // ── Top band: controls ──
