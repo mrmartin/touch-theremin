@@ -375,6 +375,10 @@ export default function Home() {
   const [isPlaying,   setIsPlaying]   = useState(false);
   const [hasFile,     setHasFile]     = useState(false);
 
+  // DOM overlay positions for LOAD and PLAY buttons (updated each draw frame via state)
+  const [loadBtnRect, setLoadBtnRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [playBtnRect, setPlayBtnRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
   // Hidden file input ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -895,71 +899,14 @@ export default function Home() {
     ctx.fillStyle = "rgba(120,160,200,0.5)";
     ctx.fillText("Relative Notation Organ by Martin Kol\u00e1\u0159", W / 2, topBand / 2);
 
-    // Left-side controls: [● REC] [LOAD] [▶/■]
-    const recW     = 52;
-    const loadW    = 52;
-    const playW    = 36;
-    const spacing  = 6;
-    let lx = margin;
-
-    // RECORD button
-    const recordBtn = { x: lx, y: btnY, w: recW, h: btnH };
-    recordBtnRef.current = recordBtn;
-    roundRect(ctx, recordBtn.x, recordBtn.y, recordBtn.w, recordBtn.h, btnR);
-    ctx.fillStyle = isRecording ? "rgba(200,40,40,0.85)" : COLOR.btnBg;
-    ctx.fill();
-    ctx.strokeStyle = isRecording ? "#ff6060" : "#2a3a50";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    // Red circle icon
-    const dotR2 = Math.max(3, btnH * 0.22);
-    ctx.fillStyle = isRecording ? "#fff" : "#e05050";
-    ctx.beginPath();
-    ctx.arc(recordBtn.x + 10, recordBtn.y + btnH / 2, dotR2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = `600 ${Math.max(9, Math.min(10, topBand * 0.40))}px 'DM Sans', sans-serif`;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = isRecording ? "#fff" : COLOR.btnText;
-    ctx.fillText(isRecording ? "STOP" : "REC", recordBtn.x + 18, recordBtn.y + btnH / 2);
-    lx += recW + spacing;
-
-    // LOAD FILE button
-    const playFileBtn = { x: lx, y: btnY, w: loadW, h: btnH };
-    playFileBtnRef.current = playFileBtn;
-    roundRect(ctx, playFileBtn.x, playFileBtn.y, playFileBtn.w, playFileBtn.h, btnR);
-    ctx.fillStyle = COLOR.btnBg;
-    ctx.fill();
-    ctx.strokeStyle = hasFile ? "#40b080" : "#2a3a50";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.font = `600 ${Math.max(9, Math.min(10, topBand * 0.40))}px 'DM Sans', sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = hasFile ? "#40d090" : COLOR.btnText;
-    ctx.fillText("LOAD", playFileBtn.x + playFileBtn.w / 2, playFileBtn.y + playFileBtn.h / 2);
-    lx += loadW + spacing;
-
-    // PLAY / STOP button
-    const playBtn = { x: lx, y: btnY, w: playW, h: btnH };
-    playBtnRef.current = playBtn;
-    const playEnabled = hasFile || isPlaying;
-    roundRect(ctx, playBtn.x, playBtn.y, playBtn.w, playBtn.h, btnR);
-    ctx.fillStyle = isPlaying ? "rgba(40,160,80,0.85)" : (playEnabled ? "rgba(30,120,60,0.6)" : COLOR.btnBg);
-    ctx.fill();
-    ctx.strokeStyle = isPlaying ? "#60ff90" : (playEnabled ? "#40b070" : "#2a3a50");
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = playEnabled ? "#90ffb0" : "rgba(120,160,140,0.4)";
-    ctx.font = `700 ${Math.max(11, Math.min(14, topBand * 0.55))}px 'DM Sans', sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(isPlaying ? "■" : "▶", playBtn.x + playBtn.w / 2, playBtn.y + playBtn.h / 2);
-
-    // Right-side controls: [?] [−] [+] [RESET]
+    // Right-side controls: [▶/■] [LOAD] [● REC] [?] [−] [+] [RESET]
     const resetW  = 52;
     const arrowW  = 28;
     const aboutW  = 28;
+    const recW    = 52;
+    const loadW   = 52;
+    const playW   = 36;
+    const spacing = 6;
     let rx = W - margin;
 
     // RESET
@@ -1032,6 +979,75 @@ export default function Home() {
     ctx.fillStyle = COLOR.btnText;
     ctx.fillText("−", minusBtn.x + minusBtn.w / 2, minusBtn.y + minusBtn.h / 2);
 
+    rx -= spacing;
+
+    // RECORD button
+    rx -= recW;
+    const recordBtn = { x: rx, y: btnY, w: recW, h: btnH };
+    recordBtnRef.current = recordBtn;
+    roundRect(ctx, recordBtn.x, recordBtn.y, recordBtn.w, recordBtn.h, btnR);
+    ctx.fillStyle = isRecording ? "rgba(200,40,40,0.85)" : COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = isRecording ? "#ff6060" : "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    const dotR2 = Math.max(3, btnH * 0.22);
+    ctx.fillStyle = isRecording ? "#fff" : "#e05050";
+    ctx.beginPath();
+    ctx.arc(recordBtn.x + 10, recordBtn.y + btnH / 2, dotR2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = `600 ${Math.max(9, Math.min(10, topBand * 0.40))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = isRecording ? "#fff" : COLOR.btnText;
+    ctx.fillText(isRecording ? "STOP" : "REC", recordBtn.x + 18, recordBtn.y + btnH / 2);
+
+    rx -= spacing;
+
+    // LOAD FILE button (canvas-drawn; real DOM button overlay handles the click)
+    rx -= loadW;
+    const playFileBtn = { x: rx, y: btnY, w: loadW, h: btnH };
+    playFileBtnRef.current = playFileBtn;
+    roundRect(ctx, playFileBtn.x, playFileBtn.y, playFileBtn.w, playFileBtn.h, btnR);
+    ctx.fillStyle = COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = hasFile ? "#40b080" : "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.font = `600 ${Math.max(9, Math.min(10, topBand * 0.40))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = hasFile ? "#40d090" : COLOR.btnText;
+    ctx.fillText("LOAD", playFileBtn.x + playFileBtn.w / 2, playFileBtn.y + playFileBtn.h / 2);
+    // Sync DOM overlay position (only update state when position actually changes)
+    setLoadBtnRect(prev =>
+      prev && prev.x === playFileBtn.x && prev.y === playFileBtn.y ? prev
+      : { x: playFileBtn.x, y: playFileBtn.y, w: playFileBtn.w, h: playFileBtn.h }
+    );
+
+    rx -= spacing;
+
+    // PLAY / STOP button
+    rx -= playW;
+    const playBtn = { x: rx, y: btnY, w: playW, h: btnH };
+    playBtnRef.current = playBtn;
+    const playEnabled = hasFile || isPlaying;
+    roundRect(ctx, playBtn.x, playBtn.y, playBtn.w, playBtn.h, btnR);
+    ctx.fillStyle = isPlaying ? "rgba(40,160,80,0.85)" : (playEnabled ? "rgba(30,120,60,0.6)" : COLOR.btnBg);
+    ctx.fill();
+    ctx.strokeStyle = isPlaying ? "#60ff90" : (playEnabled ? "#40b070" : "#2a3a50");
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = playEnabled ? "#90ffb0" : "rgba(120,160,140,0.4)";
+    ctx.font = `700 ${Math.max(11, Math.min(14, topBand * 0.55))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(isPlaying ? "■" : "▶", playBtn.x + playBtn.w / 2, playBtn.y + playBtn.h / 2);
+    setPlayBtnRect(prev =>
+      prev && prev.x === playBtn.x && prev.y === playBtn.y ? prev
+      : { x: playBtn.x, y: playBtn.y, w: playBtn.w, h: playBtn.h }
+    );
+
     rafRef.current = requestAnimationFrame(draw);
   }, [display, isRecording, isPlaying, hasFile]);
 
@@ -1069,20 +1085,6 @@ export default function Home() {
     }
     if (hitBtn(recordBtnRef.current, px, py)) {
       doToggleRecord();
-      touchMapRef.current.set(id, null);
-      return;
-    }
-    if (hitBtn(playFileBtnRef.current, px, py)) {
-      fileInputRef.current?.click();
-      touchMapRef.current.set(id, null);
-      return;
-    }
-    if (hitBtn(playBtnRef.current, px, py)) {
-      if (isPlayingRef.current) {
-        doStopPlayback();
-      } else if (loadedEventsRef.current.length > 0) {
-        doStartPlayback();
-      }
       touchMapRef.current.set(id, null);
       return;
     }
@@ -1365,6 +1367,52 @@ export default function Home() {
         }}>
           Rotate device to landscape to play
         </div>
+      )}
+      {/* Invisible DOM overlay for LOAD button — needed so browser allows file picker from a real gesture */}
+      {loadBtnRect && (
+        <button
+          style={{
+            position: "fixed",
+            left: loadBtnRect.x,
+            top:  loadBtnRect.y,
+            width:  loadBtnRect.w,
+            height: loadBtnRect.h,
+            opacity: 0,
+            cursor: "pointer",
+            zIndex: 5,
+            padding: 0,
+            border: "none",
+            background: "transparent",
+          }}
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Load CSV file"
+        />
+      )}
+      {/* Invisible DOM overlay for PLAY/STOP button */}
+      {playBtnRect && (
+        <button
+          style={{
+            position: "fixed",
+            left: playBtnRect.x,
+            top:  playBtnRect.y,
+            width:  playBtnRect.w,
+            height: playBtnRect.h,
+            opacity: 0,
+            cursor: "pointer",
+            zIndex: 5,
+            padding: 0,
+            border: "none",
+            background: "transparent",
+          }}
+          onClick={() => {
+            if (isPlayingRef.current) {
+              doStopPlayback();
+            } else if (loadedEventsRef.current.length > 0) {
+              doStartPlayback();
+            }
+          }}
+          aria-label={isPlaying ? "Stop playback" : "Play"}
+        />
       )}
       {/* Hidden file input for LOAD button */}
       <input
