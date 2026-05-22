@@ -1395,11 +1395,15 @@ export default function Home() {
           Rotate device to landscape to play
         </div>
       )}
-      {/* Invisible DOM overlay for LOAD button
-           Uses onPointerDown+stopPropagation so it fires before the global
-           window touchstart handler that calls preventDefault() */}
+      {/* File input positioned directly over the LOAD canvas button.
+           Safari (iPad) only opens the file picker when the user taps the
+           <input type="file"> element itself — programmatic .click() is blocked.
+           We position the input over the canvas button so the tap lands on it. */}
       {loadBtnRect && (
-        <button
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
           style={{
             position: "fixed",
             left: loadBtnRect.x,
@@ -1410,13 +1414,13 @@ export default function Home() {
             cursor: "pointer",
             zIndex: 20,
             padding: 0,
-            border: "none",
-            background: "transparent",
-            touchAction: "none",
+            margin: 0,
+            fontSize: 0,
           }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            fileInputRef.current?.click();
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) doLoadFile(file);
+            e.target.value = "";
           }}
           aria-label="Load CSV file"
         />
@@ -1449,19 +1453,7 @@ export default function Home() {
           aria-label={isPlaying ? "Stop playback" : "Play"}
         />
       )}
-      {/* Hidden file input for LOAD button */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".csv,text/csv"
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) doLoadFile(file);
-          // Reset so the same file can be re-selected
-          e.target.value = "";
-        }}
-      />
+
     </>
   );
 }
