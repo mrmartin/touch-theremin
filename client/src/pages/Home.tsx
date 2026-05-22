@@ -21,11 +21,11 @@ import { useLocation } from "wouter";
 //   1/2 ↔ 2/1 | 1/3 ↔ 3/1 | 2/5 ↔ 5/2 | 1/4 ↔ 4/1
 const RATIOS: [number, number][] = [
   // ← down (index 0–8), outermost first
-  [1,4],[2,5],[1,3],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],
+  [1,5],[1,4],[1,3],[2,5],[1,2],[3,5],[2,3],[3,4],[4,5],
   // centre (index 9)
   [1,1],
   // up → (index 10–18), innermost first
-  [7,6],[6,5],[5,4],[4,3],[3,2],[2,1],[3,1],[5,2],[4,1],
+  [5,4],[4,3],[3,2],[5,3],[2,1],[5,2],[3,1],[4,1],[5,1],
 ];
 
 // ─── GCD ─────────────────────────────────────────────────────────────────────
@@ -158,15 +158,22 @@ function hitPad(pads: Pad[], px: number, py: number): Pad | null {
   return null;
 }
 
-// ─── Ratio complexity → label brightness [0..1] ───────────────────────────────
-// Complexity = max(num, den) after GCD reduction.
-// Simpler fractions (smaller max) get higher brightness.
-// Scale: 1→1.0, 2→0.85, 3→0.70, 4→0.58, 5→0.48, 6→0.40, 7→0.33
+// ─── Ratio height → pad brightness [0..1] ───────────────────────────────────
+// Height = max(num, den) after GCD reduction. Drives background brightness.
+// Tier map (per spec):
+//   height 1 → 1.00  (1/1 — brightest, home)
+//   height 2 → 0.75  (1/2, 2/1 — octaves)
+//   height 3 → 0.52  (1/3, 2/3, 3/2, 3/1 — fifths/fourths)
+//   height 4 → 0.34  (1/4, 3/4, 4/3, 4/1)
+//   height 5 → 0.18  (all prime-5 ratios — darkest)
 function ratioBrightness(num: number, den: number): number {
   const g = gcd(num, den);
-  const complexity = Math.max(num / g, den / g);
-  // Exponential decay: brightness = 1 / complexity^0.55
-  return Math.min(1, 1 / Math.pow(complexity, 0.55));
+  const h = Math.max(num / g, den / g);
+  if (h <= 1) return 1.00;
+  if (h <= 2) return 0.75;
+  if (h <= 3) return 0.52;
+  if (h <= 4) return 0.34;
+  return 0.18;
 }
 
 // ─── Rounded rect helper ──────────────────────────────────────────────────────
@@ -375,26 +382,47 @@ export default function Home() {
         ? litChordRef.current.has(pad.index)
         : (flashRef.current.get(pad.index) ?? 0) > now;
 
+      // Brightness drives the pad background fill
+      const [num, den] = RATIOS[pad.ratioIndex];
+      const b = ratioBrightness(num, den); // 0..1
+
       let baseColor: string;
       let borderColor: string;
-      if (isCenter) {
-        baseColor   = isChord ? COLOR.chordCenter      : COLOR.nextCenter;
-        borderColor = isChord ? COLOR.chordCenterBorder: COLOR.nextCenterBorder;
+      if (isLit) {
+        // Lit: use row accent colour (unchanged)
+        baseColor   = isChord ? COLOR.chordLit : COLOR.nextLit;
+        borderColor = baseColor;
+      } else if (isChord) {
+        // CHORD unlit: interpolate from darkest (#0d1520) to brightest (#2a5080)
+        const r  = Math.round(13  + b * (42  - 13));
+        const g  = Math.round(21  + b * (80  - 21));
+        const bv = Math.round(32  + b * (128 - 32));
+        baseColor   = `rgb(${r},${g},${bv})`;
+        // Border slightly brighter than fill
+        const rb = Math.round(20  + b * (60  - 20));
+        const gb = Math.round(40  + b * (120 - 40));
+        const bb = Math.round(60  + b * (160 - 60));
+        borderColor = `rgb(${rb},${gb},${bb})`;
       } else {
-        baseColor   = isChord ? COLOR.chordBase   : COLOR.nextBase;
-        borderColor = isChord ? COLOR.chordBorder : COLOR.nextBorder;
+        // NEXT unlit: interpolate from darkest (#0d1a0d) to brightest (#1e4a1e)
+        const r  = Math.round(13  + b * (30  - 13));
+        const g  = Math.round(26  + b * (74  - 26));
+        const bv = Math.round(13  + b * (30  - 13));
+        baseColor   = `rgb(${r},${g},${bv})`;
+        const rb = Math.round(20  + b * (50  - 20));
+        const gb = Math.round(40  + b * (100 - 40));
+        const bb = Math.round(20  + b * (50  - 20));
+        borderColor = `rgb(${rb},${gb},${bb})`;
       }
-      const litColor = isChord ? COLOR.chordLit : COLOR.nextLit;
 
       roundRect(ctx, pad.x, pad.y, pad.w, pad.h, 5);
-      ctx.fillStyle = isLit ? litColor : baseColor;
+      ctx.fillStyle = baseColor;
       ctx.fill();
-      ctx.strokeStyle = isLit ? litColor : borderColor;
+      ctx.strokeStyle = borderColor;
       ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
       ctx.stroke();
 
-      // Ratio label — brightness scales with fraction simplicity
-      const [num, den] = RATIOS[pad.ratioIndex];
+      // Ratio label — always light enough to read; slightly brighter for simpler ratios
       const label = `${num}/${den}`;
       const fontSize = Math.max(9, Math.min(13, pad.w * 0.36));
       ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
@@ -402,16 +430,13 @@ export default function Home() {
       ctx.textBaseline = "middle";
       if (isLit) {
         ctx.fillStyle = COLOR.ratioTextLit;
-      } else if (isCenter) {
-        ctx.fillStyle = COLOR.ratioTextCenter;
       } else {
-        // Interpolate between dim (#4a6a80) and bright (#c8dce8) by complexity
-        const b = ratioBrightness(num, den);
-        // Parse base color components: dim = (74,106,128), bright = (200,220,232)
-        const r = Math.round(74  + b * (200 - 74));
-        const g = Math.round(106 + b * (220 - 106));
-        const bv = Math.round(128 + b * (232 - 128));
-        ctx.fillStyle = `rgb(${r},${g},${bv})`;
+        // Label brightness: dim floor 0.45, bright ceiling 1.0
+        const lt = 0.45 + b * 0.55;
+        const lr = Math.round(lt * 200);
+        const lg = Math.round(lt * 220);
+        const lb = Math.round(lt * 232);
+        ctx.fillStyle = `rgb(${lr},${lg},${lb})`;
       }
       ctx.fillText(label, pad.x + pad.w / 2, pad.y + pad.h / 2);
     }
