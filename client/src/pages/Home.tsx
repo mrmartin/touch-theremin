@@ -354,6 +354,8 @@ export default function Home() {
   const staffNotesRef = useRef<NoteEvent[]>([]);
   // Staff / timeline: NEXT tap events (vertical green lines)
   const staffNextRef  = useRef<NextEvent[]>([]);
+  // Staff / timeline: record-start markers (red vertical line)
+  const staffRecordStartRef = useRef<number[]>([]); // array of performance.now() timestamps
 
   // ── Recording ──
   const isRecordingRef    = useRef(false);          // true while recording
@@ -474,6 +476,7 @@ export default function Home() {
       recordStartRef.current = performance.now();
       recordedEventsRef.current = [];
       recOpenRef.current.clear();
+      staffRecordStartRef.current.push(performance.now());
       setIsRecording(true);
     } else {
       // Stop recording — close any still-open chord events
@@ -714,6 +717,30 @@ export default function Home() {
         ctx.fillStyle = `rgba(60,220,120,${alpha * 0.6})`;
         ctx.beginPath();
         ctx.arc(lineX, centerLaneY, dotR * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Record-start markers (red vertical line spanning full staff height)
+      staffRecordStartRef.current = staffRecordStartRef.current.filter(t =>
+        (now - t) * SCROLL_PX_PER_MS < playheadX
+      );
+      for (const t of staffRecordStartRef.current) {
+        const lineX = playheadX - (now - t) * SCROLL_PX_PER_MS;
+        if (lineX < 0 || lineX > W) continue;
+        const age = (now - t) * SCROLL_PX_PER_MS / playheadX;
+        const alpha = Math.max(0, 1 - age);
+        ctx.strokeStyle = `rgba(220,60,60,${alpha * 0.9})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(lineX, staffY);
+        ctx.lineTo(lineX, staffY + staffH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Small red circle at the top
+        ctx.fillStyle = `rgba(220,60,60,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(lineX, staffY + 6, 4, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -1368,7 +1395,9 @@ export default function Home() {
           Rotate device to landscape to play
         </div>
       )}
-      {/* Invisible DOM overlay for LOAD button — needed so browser allows file picker from a real gesture */}
+      {/* Invisible DOM overlay for LOAD button
+           Uses onPointerDown+stopPropagation so it fires before the global
+           window touchstart handler that calls preventDefault() */}
       {loadBtnRect && (
         <button
           style={{
@@ -1379,12 +1408,16 @@ export default function Home() {
             height: loadBtnRect.h,
             opacity: 0,
             cursor: "pointer",
-            zIndex: 5,
+            zIndex: 20,
             padding: 0,
             border: "none",
             background: "transparent",
+            touchAction: "none",
           }}
-          onClick={() => fileInputRef.current?.click()}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            fileInputRef.current?.click();
+          }}
           aria-label="Load CSV file"
         />
       )}
@@ -1399,12 +1432,14 @@ export default function Home() {
             height: playBtnRect.h,
             opacity: 0,
             cursor: "pointer",
-            zIndex: 5,
+            zIndex: 20,
             padding: 0,
             border: "none",
             background: "transparent",
+            touchAction: "none",
           }}
-          onClick={() => {
+          onPointerDown={(e) => {
+            e.stopPropagation();
             if (isPlayingRef.current) {
               doStopPlayback();
             } else if (loadedEventsRef.current.length > 0) {
