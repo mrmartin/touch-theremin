@@ -14,18 +14,19 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { useLocation } from "wouter";
 
 // ─── Ratios ───────────────────────────────────────────────────────────────────
-// 19 entries: perfectly symmetric around centre (index 9 = 1/1).
-// Left side (index 0–8) reads outward: each entry is the reciprocal of its
-// mirror on the right (index 18–10). Pairs from centre outward:
-//   6/7 ↔ 7/6 | 5/6 ↔ 6/5 | 4/5 ↔ 5/4 | 3/4 ↔ 4/3 | 2/3 ↔ 3/2
-//   1/2 ↔ 2/1 | 1/3 ↔ 3/1 | 2/5 ↔ 5/2 | 1/4 ↔ 4/1
+// 25 entries: perfectly symmetric around centre (index 12 = 1/1).
+// Left side (index 0–11) reads outermost first; each is the reciprocal of its
+// mirror on the right (index 24–13). Pairs from centre outward:
+//   11/12 ↔ 12/11 | 7/8 ↔ 8/7 | 5/6 ↔ 6/5 | 3/4 ↔ 4/3 | 7/10 ↔ 10/7
+//   2/3  ↔ 3/2   | 5/8 ↔ 8/5 | 3/5 ↔ 5/3 | 4/7 ↔ 7/4 | 6/11 ↔ 11/6
+//   1/2  ↔ 2/1
 const RATIOS: [number, number][] = [
-  // ← down (index 0–8), outermost first
-  [1,5],[1,4],[1,3],[2,5],[1,2],[3,5],[2,3],[3,4],[4,5],
-  // centre (index 9)
+  // ← down (index 0–11), outermost first
+  [1,2],[6,11],[4,7],[3,5],[5,8],[2,3],[7,10],[3,4],[4,5],[5,6],[7,8],[11,12],
+  // centre (index 12)
   [1,1],
-  // up → (index 10–18), innermost first
-  [5,4],[4,3],[3,2],[5,3],[2,1],[5,2],[3,1],[4,1],[5,1],
+  // up → (index 13–24), innermost first
+  [12,11],[8,7],[6,5],[5,4],[4,3],[10,7],[3,2],[8,5],[5,3],[7,4],[11,6],[2,1],
 ];
 
 // ─── GCD ─────────────────────────────────────────────────────────────────────
@@ -116,8 +117,8 @@ interface Pad {
   x: number; y: number; w: number; h: number;
 }
 
-const N_PADS = 19; // total pads per row
-const CENTER_IDX = 9; // index of 1/1
+const N_PADS = 25; // total pads per row
+const CENTER_IDX = 12; // index of 1/1
 
 // Staff occupies 1/3 of the playable area (below the top band).
 // The two pad rows share the remaining 2/3.
@@ -134,16 +135,17 @@ function buildPads(W: number, H: number): Pad[] {
   const pads: Pad[] = [];
   const gap = 2;
 
-  const chordY = topBand + staffH;
-  const nextY  = chordY + rowH;
+  // NEXT row is now on top (immediately below the staff), CHORD is on the bottom
+  const nextY  = topBand + staffH;
+  const chordY = nextY + rowH;
 
   for (let i = 0; i < N_PADS; i++) {
     pads.push({
       index: i,
-      row: "chord",
+      row: "next",
       ratioIndex: i,
       x: i * padW + gap / 2,
-      y: chordY + gap / 2,
+      y: nextY + gap / 2,
       w: padW - gap,
       h: rowH - gap,
     });
@@ -151,10 +153,10 @@ function buildPads(W: number, H: number): Pad[] {
   for (let i = 0; i < N_PADS; i++) {
     pads.push({
       index: i + N_PADS,
-      row: "next",
+      row: "chord",
       ratioIndex: i,
       x: i * padW + gap / 2,
-      y: nextY + gap / 2,
+      y: chordY + gap / 2,
       w: padW - gap,
       h: rowH - gap,
     });
@@ -180,11 +182,16 @@ function hitPad(pads: Pad[], px: number, py: number): Pad | null {
 function ratioBrightness(num: number, den: number): number {
   const g = gcd(num, den);
   const h = Math.max(num / g, den / g);
-  if (h <= 1) return 1.00;
-  if (h <= 2) return 0.75;
-  if (h <= 3) return 0.52;
-  if (h <= 4) return 0.34;
-  return 0.18;
+  if (h <= 1)  return 1.00;  // 1/1 — home
+  if (h <= 2)  return 0.75;  // 1/2, 2/1 — octaves
+  if (h <= 3)  return 0.52;  // fifths/fourths (prime 3)
+  if (h <= 4)  return 0.38;  // height 4 (2×2)
+  if (h <= 5)  return 0.26;  // prime 5 — thirds/sixths
+  if (h <= 6)  return 0.20;  // height 6 (2×3)
+  if (h <= 7)  return 0.15;  // prime 7
+  if (h <= 8)  return 0.12;  // height 8 (2×4)
+  if (h <= 10) return 0.10;  // height 10 (2×5)
+  return 0.08;               // height 11, 12 — most complex
 }
 
 // ─── Rounded rect helper ──────────────────────────────────────────────────────
