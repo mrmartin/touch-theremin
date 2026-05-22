@@ -14,15 +14,18 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { useLocation } from "wouter";
 
 // ─── Ratios ───────────────────────────────────────────────────────────────────
-// 19 entries: 9 descending on the left, 1/1 in the centre (index 9),
-// 9 ascending (reciprocal) on the right.
+// 19 entries: perfectly symmetric around centre (index 9 = 1/1).
+// Left side (index 0–8) reads outward: each entry is the reciprocal of its
+// mirror on the right (index 18–10). Pairs from centre outward:
+//   6/7 ↔ 7/6 | 5/6 ↔ 6/5 | 4/5 ↔ 5/4 | 3/4 ↔ 4/3 | 2/3 ↔ 3/2
+//   1/2 ↔ 2/1 | 1/3 ↔ 3/1 | 1/4 ↔ 4/1 | 1/6 ↔ 6/1
 const RATIOS: [number, number][] = [
-  // ← down (index 0–8)
-  [1,4],[1,3],[2,5],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],
+  // ← down (index 0–8), outermost first
+  [1,6],[1,4],[1,3],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],
   // centre (index 9)
   [1,1],
-  // up → (index 10–18)
-  [7,6],[6,5],[5,4],[4,3],[3,2],[5,3],[7,4],[2,1],[3,1],
+  // up → (index 10–18), innermost first
+  [7,6],[6,5],[5,4],[4,3],[3,2],[2,1],[3,1],[4,1],[6,1],
 ];
 
 // ─── GCD ─────────────────────────────────────────────────────────────────────
@@ -220,8 +223,6 @@ export default function Home() {
 
   // Voices
   const chordVoicesRef = useRef<Map<number, Voice>>(new Map()); // padIndex → Voice
-  const nextVoiceRef   = useRef<Voice | null>(null);
-  const nextBlipTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Touch tracking: touch identifier → pad index (or null if off-pad)
   const touchMapRef = useRef<Map<number, number | null>>(new Map());
@@ -392,17 +393,17 @@ export default function Home() {
       }
     }
 
-    // ── Row labels ──
-    const labelFontSize = Math.max(9, Math.min(12, topBand * 0.5));
-    ctx.font = `500 ${labelFontSize}px 'DM Sans', sans-serif`;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = COLOR.text;
+    // ── Row labels — drawn vertically centred in each row, right-aligned after the last pad ──
     if (pads.length > 0) {
-      const cp = pads[0];
-      ctx.fillText("CHORD", 6, cp.y + cp.h / 2);
-      const np = pads[18];
-      ctx.fillText("NEXT", 6, np.y + np.h / 2);
+      const labelFontSize = Math.max(8, Math.min(11, topBand * 0.45));
+      ctx.font = `500 ${labelFontSize}px 'DM Sans', sans-serif`;
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(138,180,204,0.45)";
+      const lastChord = pads[N_PADS - 1];
+      const lastNext  = pads[2 * N_PADS - 1];
+      ctx.fillText("CHORD", W - 4, lastChord.y + lastChord.h / 2);
+      ctx.fillText("NEXT",  W - 4, lastNext.y  + lastNext.h  / 2);
     }
 
     // ── Top band: controls ──
@@ -579,22 +580,8 @@ export default function Home() {
       // Retune held chord — all frequencies recomputed from integers
       retuneChord(30);
 
-      // Flash
+      // Flash only — NEXT row is silent
       flashRef.current.set(pad.index, performance.now() + 150);
-
-      // Blip at new MODE (ratio 1/1 relative to mode = base × modeNum/modeDen)
-      if (nextVoiceRef.current) {
-        nextVoiceRef.current.stop(80);
-        nextVoiceRef.current = null;
-      }
-      if (nextBlipTimer.current) clearTimeout(nextBlipTimer.current);
-      const ac = getAC();
-      const blip = new Voice(ac, exactFreq(1, 1));
-      nextVoiceRef.current = blip;
-      nextBlipTimer.current = setTimeout(() => {
-        blip.stop(120);
-        nextVoiceRef.current = null;
-      }, 250);
     }
   }, [doReset, doBaseChange]);
 
@@ -650,7 +637,7 @@ export default function Home() {
       litChordRef.current.add(newIndex);
       rebuildChord();
     } else {
-      // Sliding into a NEXT pad fires it once
+      // Sliding into a NEXT pad fires it once — silent, flash only
       const [num, den] = RATIOS[pad.ratioIndex];
       modeNumRef.current *= num;
       modeDenRef.current *= den;
@@ -660,12 +647,6 @@ export default function Home() {
       pushDisplay();
       retuneChord(30);
       flashRef.current.set(newIndex, performance.now() + 150);
-      if (nextVoiceRef.current) { nextVoiceRef.current.stop(80); nextVoiceRef.current = null; }
-      if (nextBlipTimer.current) clearTimeout(nextBlipTimer.current);
-      const ac = getAC();
-      const blip = new Voice(ac, exactFreq(1, 1));
-      nextVoiceRef.current = blip;
-      nextBlipTimer.current = setTimeout(() => { blip.stop(120); nextVoiceRef.current = null; }, 250);
     }
   }, []);
 
@@ -727,7 +708,6 @@ export default function Home() {
       window.removeEventListener("mouseup",   onMouseUp);
       window.removeEventListener("mousemove", onMouseMove);
       Array.from(chordVoicesRef.current.values()).forEach(v => v.stop(0));
-      if (nextVoiceRef.current) nextVoiceRef.current.stop(0);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally empty — handlers use refs, never stale
@@ -749,6 +729,7 @@ export default function Home() {
           inset: 0,
           touchAction: "none",
           cursor: "default",
+          overflow: "hidden",
         }}
       />
       {portrait && (
