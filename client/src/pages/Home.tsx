@@ -243,6 +243,12 @@ interface NoteEvent {
   endTime:    number;  // ms, or -1 while held
 }
 
+// A NEXT event records a MODE-change tap: a vertical green line from 1/1 to the tapped ratio.
+interface NextEvent {
+  ratioIndex: number;  // 0..18 — the tapped NEXT pad
+  time:       number;  // performance.now() ms
+}
+
 // Pixels per millisecond — staff scroll speed.
 // 100 px/s = 0.1 px/ms. One beat line per second = 100 px apart.
 const SCROLL_PX_PER_MS = 0.1;
@@ -297,6 +303,8 @@ export default function Home() {
 
   // Staff / timeline: all note events (completed + active)
   const staffNotesRef = useRef<NoteEvent[]>([]);
+  // Staff / timeline: NEXT tap events (vertical green lines)
+  const staffNextRef  = useRef<NextEvent[]>([]);
 
   // RAF
   const rafRef = useRef<number>(0);
@@ -459,6 +467,53 @@ export default function Home() {
           ctx.fill();
           ctx.shadowBlur  = 0;
         }
+      }
+
+      // Prune NEXT events that have scrolled off the left edge
+      staffNextRef.current = staffNextRef.current.filter(n =>
+        (now - n.time) * SCROLL_PX_PER_MS < playheadX
+      );
+
+      // Draw NEXT vertical lines (green, from 1/1 lane to tapped ratio lane)
+      for (const ev of staffNextRef.current) {
+        const lineX = playheadX - (now - ev.time) * SCROLL_PX_PER_MS;
+        if (lineX < 0 || lineX > W) continue;
+
+        const centerLaneY = staffY + CENTER_IDX * laneH + laneH / 2;
+        const targetLaneY = staffY + ev.ratioIndex * laneH + laneH / 2;
+
+        const topY    = Math.min(centerLaneY, targetLaneY);
+        const bottomY = Math.max(centerLaneY, targetLaneY);
+        const lineLen = bottomY - topY;
+
+        // Fade as it scrolls left
+        const age = (now - ev.time) * SCROLL_PX_PER_MS / playheadX; // 0..1
+        const alpha = Math.max(0, 1 - age);
+
+        // Vertical line
+        ctx.strokeStyle = `rgba(60,220,120,${alpha * 0.85})`;
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(lineX, topY);
+        ctx.lineTo(lineX, bottomY);
+        ctx.stroke();
+
+        // Dot at the tapped ratio end
+        const dotR = Math.max(3, laneH * 0.35);
+        ctx.fillStyle = `rgba(60,220,120,${alpha * 0.9})`;
+        ctx.shadowColor = `rgba(60,220,120,${alpha * 0.5})`;
+        ctx.shadowBlur  = 6;
+        ctx.beginPath();
+        ctx.arc(lineX, targetLaneY, dotR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Small dot at 1/1 end
+        ctx.fillStyle = `rgba(60,220,120,${alpha * 0.6})`;
+        ctx.beginPath();
+        ctx.arc(lineX, centerLaneY, dotR * 0.6, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       // Lane divider lines
@@ -790,6 +845,8 @@ export default function Home() {
 
       // Flash only — NEXT row is silent
       flashRef.current.set(pad.index, performance.now() + 150);
+      // Record NEXT event for the staff (vertical green line)
+      staffNextRef.current.push({ ratioIndex: pad.ratioIndex, time: performance.now() });
     }
   }, [doReset, doBaseChange]);
 
@@ -872,6 +929,8 @@ export default function Home() {
       pushDisplay();
       retuneChord(30);
       flashRef.current.set(newIndex, performance.now() + 150);
+      // Record NEXT event for the staff (vertical green line)
+      staffNextRef.current.push({ ratioIndex: pad.ratioIndex, time: performance.now() });
     }
   }, []);
 
