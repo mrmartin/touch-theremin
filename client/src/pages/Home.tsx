@@ -119,12 +119,23 @@ interface Pad {
 const N_PADS = 19; // total pads per row
 const CENTER_IDX = 9; // index of 1/1
 
+// Staff occupies 1/3 of the playable area (below the top band).
+// The two pad rows share the remaining 2/3.
+function staffHeight(H: number): number {
+  const topBand = Math.round(H * 0.08);
+  return Math.round((H - topBand) / 3);
+}
+
 function buildPads(W: number, H: number): Pad[] {
   const topBand = Math.round(H * 0.08);
-  const rowH    = Math.round((H - topBand) / 2);
+  const staffH  = staffHeight(H);
+  const rowH    = Math.round((H - topBand - staffH) / 2);
   const padW    = W / N_PADS;
   const pads: Pad[] = [];
   const gap = 2;
+
+  const chordY = topBand + staffH;
+  const nextY  = chordY + rowH;
 
   for (let i = 0; i < N_PADS; i++) {
     pads.push({
@@ -132,7 +143,7 @@ function buildPads(W: number, H: number): Pad[] {
       row: "chord",
       ratioIndex: i,
       x: i * padW + gap / 2,
-      y: topBand + gap / 2,
+      y: chordY + gap / 2,
       w: padW - gap,
       h: rowH - gap,
     });
@@ -143,7 +154,7 @@ function buildPads(W: number, H: number): Pad[] {
       row: "next",
       ratioIndex: i,
       x: i * padW + gap / 2,
-      y: topBand + rowH + gap / 2,
+      y: nextY + gap / 2,
       w: padW - gap,
       h: rowH - gap,
     });
@@ -223,6 +234,19 @@ const COLOR = {
   btnText:      "#9ab8cc",
 };
 
+// ─── Staff / timeline ───────────────────────────────────────────────────────
+// A note event records when a CHORD pad was pressed and released.
+// endTime = -1 means the note is still held.
+interface NoteEvent {
+  ratioIndex: number;  // 0..18
+  startTime:  number;  // performance.now() ms
+  endTime:    number;  // ms, or -1 while held
+}
+
+// Pixels per millisecond — staff scroll speed.
+// 100 px/s = 0.1 px/ms. One beat line per second = 100 px apart.
+const SCROLL_PX_PER_MS = 0.1;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 interface DisplayState {
   base: number;
@@ -270,6 +294,9 @@ export default function Home() {
 
   // Navigation
   const [, setLocation] = useLocation();
+
+  // Staff / timeline: all note events (completed + active)
+  const staffNotesRef = useRef<NoteEvent[]>([]);
 
   // RAF
   const rafRef = useRef<number>(0);
@@ -372,6 +399,121 @@ export default function Home() {
     // Top band background
     ctx.fillStyle = COLOR.topBg;
     ctx.fillRect(0, 0, W, topBand);
+
+    // ── Draw scrolling staff ──
+    {
+      const staffH  = staffHeight(H);
+      const staffY  = topBand;
+      const laneH   = staffH / N_PADS;
+      // Playhead is fixed at 80% from the left
+      const playheadX = W * 0.80;
+      // Scroll: how many px have elapsed since t=0 at this moment
+      const scrollPx = now * SCROLL_PX_PER_MS;
+
+      // Staff background
+      ctx.fillStyle = "#0a0d12";
+      ctx.fillRect(0, staffY, W, staffH);
+
+      // Prune notes that have scrolled fully off the left edge
+      // A note's right edge is at playheadX - (now - endTime) * SCROLL_PX_PER_MS
+      // It's off-screen when that is < 0, i.e. endTime < now - playheadX / SCROLL_PX_PER_MS
+      const offScreenMs = playheadX / SCROLL_PX_PER_MS;
+      staffNotesRef.current = staffNotesRef.current.filter(n =>
+        n.endTime === -1 || (now - n.endTime) * SCROLL_PX_PER_MS < playheadX
+      );
+
+      // Draw note bars
+      for (const note of staffNotesRef.current) {
+        const [num, den] = RATIOS[note.ratioIndex];
+        const b = ratioBrightness(num, den);
+        const isActive = note.endTime === -1;
+
+        // X positions: time → pixels
+        // The playhead represents "now". A moment T ms in the past is (now-T)*SCROLL_PX_PER_MS px to the left.
+        const barRight = isActive
+          ? playheadX
+          : playheadX - (now - note.endTime) * SCROLL_PX_PER_MS;
+        const barLeft  = playheadX - (now - note.startTime) * SCROLL_PX_PER_MS;
+        const barW = Math.max(2, barRight - barLeft);
+        if (barRight < 0) continue; // off screen
+
+        // Lane Y: ratioIndex 0 = top lane, 18 = bottom lane
+        const laneY = staffY + note.ratioIndex * laneH;
+        const barH  = Math.max(2, laneH - 2);
+        const barY  = laneY + (laneH - barH) / 2;
+
+        // Colour: same brightness tiers as pad, blue family
+        const alpha = isActive ? 0.85 : 0.55;
+        const r  = Math.round(30  + b * (60  - 30));
+        const g  = Math.round(90  + b * (160 - 90));
+        const bv = Math.round(160 + b * (255 - 160));
+        ctx.fillStyle = `rgba(${r},${g},${bv},${alpha})`;
+        ctx.beginPath();
+        ctx.roundRect(barLeft, barY, barW, barH, 3);
+        ctx.fill();
+
+        // Active glow
+        if (isActive) {
+          ctx.shadowColor = `rgba(${r},${g},${bv},0.6)`;
+          ctx.shadowBlur  = 8;
+          ctx.fill();
+          ctx.shadowBlur  = 0;
+        }
+      }
+
+      // Lane divider lines
+      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= N_PADS; i++) {
+        const ly = staffY + i * laneH;
+        ctx.beginPath();
+        ctx.moveTo(0, ly);
+        ctx.lineTo(W, ly);
+        ctx.stroke();
+      }
+
+      // Beat lines (one per second) — scrolling
+      const beatIntervalPx = SCROLL_PX_PER_MS * 1000; // 100 px
+      // First beat line to the right of x=0
+      const firstBeatOffset = beatIntervalPx - (scrollPx % beatIntervalPx);
+      ctx.strokeStyle = "rgba(255,255,255,0.12)";
+      ctx.lineWidth = 1;
+      for (let bx = firstBeatOffset; bx < W; bx += beatIntervalPx) {
+        ctx.beginPath();
+        ctx.moveTo(bx, staffY);
+        ctx.lineTo(bx, staffY + staffH);
+        ctx.stroke();
+      }
+
+      // Playhead line
+      ctx.strokeStyle = "rgba(120,180,255,0.5)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(playheadX, staffY);
+      ctx.lineTo(playheadX, staffY + staffH);
+      ctx.stroke();
+
+      // Ratio labels on the left edge of each lane
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      for (let i = 0; i < N_PADS; i++) {
+        const [num, den] = RATIOS[i];
+        const b = ratioBrightness(num, den);
+        const lt = 0.30 + b * 0.45;
+        ctx.fillStyle = `rgba(${Math.round(lt*200)},${Math.round(lt*220)},${Math.round(lt*232)},0.7)`;
+        const fontSize = Math.max(7, Math.min(10, laneH * 0.65));
+        ctx.font = `500 ${fontSize}px 'DM Mono', monospace`;
+        ctx.fillText(`${num}/${den}`, 4, staffY + i * laneH + laneH / 2);
+      }
+
+      // Staff bottom border
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, staffY + staffH);
+      ctx.lineTo(W, staffY + staffH);
+      ctx.stroke();
+    }
 
     // ── Draw pads ──
     const pads = padsRef.current;
@@ -630,6 +772,8 @@ export default function Home() {
       chordVoicesRef.current.set(id, { voice: new Voice(ac, exactFreq(pNum, pDen), 1), padIndex: pad.index });
       padRefAdd(pad.index);
       rebuildChord();
+      // Record note-on for the staff
+      staffNotesRef.current.push({ ratioIndex: pad.ratioIndex, startTime: performance.now(), endTime: -1 });
 
     } else {
       // NEXT: multiply MODE
@@ -660,6 +804,14 @@ export default function Home() {
       if (entry) {
         entry.voice.stop(120);
         chordVoicesRef.current.delete(id);
+        // Close the most recent open staff event for this ratioIndex
+        const notes = staffNotesRef.current;
+        for (let i = notes.length - 1; i >= 0; i--) {
+          if (notes[i].ratioIndex === entry.padIndex && notes[i].endTime === -1) {
+            notes[i].endTime = performance.now();
+            break;
+          }
+        }
       }
       padRefRemove(padIndex);
       // Rebuild remaining voices now that chord is smaller
@@ -684,6 +836,14 @@ export default function Home() {
       if (entry) {
         entry.voice.stop(60);
         chordVoicesRef.current.delete(id);
+        // Close the open staff event for this ratioIndex
+        const notes = staffNotesRef.current;
+        for (let i = notes.length - 1; i >= 0; i--) {
+          if (notes[i].ratioIndex === entry.padIndex && notes[i].endTime === -1) {
+            notes[i].endTime = performance.now();
+            break;
+          }
+        }
       }
       padRefRemove(prevIndex);
     }
@@ -699,6 +859,8 @@ export default function Home() {
       chordVoicesRef.current.set(id, { voice: new Voice(ac, exactFreq(pNum, pDen), 1), padIndex: pad.index });
       padRefAdd(pad.index);
       rebuildChord();
+      // Record note-on for the staff
+      staffNotesRef.current.push({ ratioIndex: pad.ratioIndex, startTime: performance.now(), endTime: -1 });
     } else {
       // Sliding into a NEXT pad fires it once — silent, flash only
       const [num, den] = RATIOS[pad.ratioIndex];
