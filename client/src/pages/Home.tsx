@@ -18,14 +18,14 @@ import { useLocation } from "wouter";
 // Left side (index 0–8) reads outward: each entry is the reciprocal of its
 // mirror on the right (index 18–10). Pairs from centre outward:
 //   6/7 ↔ 7/6 | 5/6 ↔ 6/5 | 4/5 ↔ 5/4 | 3/4 ↔ 4/3 | 2/3 ↔ 3/2
-//   1/2 ↔ 2/1 | 1/3 ↔ 3/1 | 1/4 ↔ 4/1 | 1/6 ↔ 6/1
+//   1/2 ↔ 2/1 | 1/3 ↔ 3/1 | 2/5 ↔ 5/2 | 1/4 ↔ 4/1
 const RATIOS: [number, number][] = [
   // ← down (index 0–8), outermost first
-  [1,6],[1,4],[1,3],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],
+  [1,4],[2,5],[1,3],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],
   // centre (index 9)
   [1,1],
   // up → (index 10–18), innermost first
-  [7,6],[6,5],[5,4],[4,3],[3,2],[2,1],[3,1],[4,1],[6,1],
+  [7,6],[6,5],[5,4],[4,3],[3,2],[2,1],[3,1],[5,2],[4,1],
 ];
 
 // ─── GCD ─────────────────────────────────────────────────────────────────────
@@ -158,6 +158,17 @@ function hitPad(pads: Pad[], px: number, py: number): Pad | null {
   return null;
 }
 
+// ─── Ratio complexity → label brightness [0..1] ───────────────────────────────
+// Complexity = max(num, den) after GCD reduction.
+// Simpler fractions (smaller max) get higher brightness.
+// Scale: 1→1.0, 2→0.85, 3→0.70, 4→0.58, 5→0.48, 6→0.40, 7→0.33
+function ratioBrightness(num: number, den: number): number {
+  const g = gcd(num, den);
+  const complexity = Math.max(num / g, den / g);
+  // Exponential decay: brightness = 1 / complexity^0.55
+  return Math.min(1, 1 / Math.pow(complexity, 0.55));
+}
+
 // ─── Rounded rect helper ──────────────────────────────────────────────────────
 function roundRect(
   ctx: CanvasRenderingContext2D,
@@ -217,12 +228,12 @@ export default function Home() {
 
   // Audio
   const audioCtxRef   = useRef<AudioContext | null>(null);
-  const baseRef       = useRef<number>(220);
+  const baseRef       = useRef<number>(432);
   const modeNumRef    = useRef<number>(1);
   const modeDenRef    = useRef<number>(1);
 
-  // Voices
-  const chordVoicesRef = useRef<Map<number, Voice>>(new Map()); // padIndex → Voice
+  // Voices keyed by TOUCH ID (not pad index) — prevents drone when two fingers share a pad
+  const chordVoicesRef = useRef<Map<number, { voice: Voice; padIndex: number }>>(new Map());
 
   // Touch tracking: touch identifier → pad index (or null if off-pad)
   const touchMapRef = useRef<Map<number, number | null>>(new Map());
@@ -230,7 +241,9 @@ export default function Home() {
   // Pad flash state: padIndex → flash-until timestamp
   const flashRef = useRef<Map<number, number>>(new Map());
 
-  // Lit CHORD pads: set of pad indices currently held
+  // Lit CHORD pads: reference-counted by how many touch IDs are on each pad
+  const padRefCountRef = useRef<Map<number, number>>(new Map());
+  // Derived set for draw loop (padIndex → lit when refCount > 0)
   const litChordRef = useRef<Set<number>>(new Set());
 
   // Geometry
@@ -243,7 +256,7 @@ export default function Home() {
   const aboutBtnRef    = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // Display state (React — drives text re-render)
-  const [display, setDisplay] = useState<DisplayState>({ base: 220, modeNum: 1, modeDen: 1 });
+  const [display, setDisplay] = useState<DisplayState>({ base: 432, modeNum: 1, modeDen: 1 });
 
   // Portrait warning
   const [portrait, setPortrait] = useState(false);
@@ -255,12 +268,14 @@ export default function Home() {
   const rafRef = useRef<number>(0);
 
   // ── Audio context ──
+  // Always resume — covers both the "suspended on creation" and "suspended after inactivity" cases.
   function getAC(): AudioContext {
     if (!audioCtxRef.current) {
       audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
-    if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
-    return audioCtxRef.current;
+    const ac = audioCtxRef.current;
+    if (ac.state !== "running") ac.resume();
+    return ac;
   }
 
   // ── Exact frequency from integers: base × (modeNum/modeDen) × (padNum/padDen) ──
@@ -271,26 +286,41 @@ export default function Home() {
 
   // ── Retune all held CHORD voices from integers ──
   function retuneChord(rampMs = 30) {
-    for (const [padIdx, voice] of Array.from(chordVoicesRef.current)) {
-      const [pNum, pDen] = RATIOS[padIdx];
+    for (const { voice, padIndex } of Array.from(chordVoicesRef.current.values())) {
+      const [pNum, pDen] = RATIOS[padIndex];
       voice.retune(exactFreq(pNum, pDen), rampMs);
     }
   }
 
+  // ── Helpers: ref-count a pad in/out ──
+  function padRefAdd(padIndex: number) {
+    const c = (padRefCountRef.current.get(padIndex) ?? 0) + 1;
+    padRefCountRef.current.set(padIndex, c);
+    litChordRef.current.add(padIndex);
+  }
+  function padRefRemove(padIndex: number) {
+    const c = (padRefCountRef.current.get(padIndex) ?? 1) - 1;
+    if (c <= 0) {
+      padRefCountRef.current.delete(padIndex);
+      litChordRef.current.delete(padIndex);
+    } else {
+      padRefCountRef.current.set(padIndex, c);
+    }
+  }
+
   // ── Rebuild all chord voices with the correct partial count for current size ──
-  // Called whenever the number of held notes changes so voices shed/gain partials.
+  // Unique pad count drives partial selection; each touch ID still owns its own Voice.
   function rebuildChord() {
     const ac = getAC();
-    const n = chordVoicesRef.current.size;
-    const pc = partialsForChordSize(n);
-    for (const [padIdx, oldVoice] of Array.from(chordVoicesRef.current)) {
-      const [pNum, pDen] = RATIOS[padIdx];
+    // Unique pads = unique padIndex values across all active touch entries
+    const uniquePads = new Set(Array.from(chordVoicesRef.current.values()).map(e => e.padIndex));
+    const pc = partialsForChordSize(uniquePads.size);
+    for (const [touchId, entry] of Array.from(chordVoicesRef.current)) {
+      const [pNum, pDen] = RATIOS[entry.padIndex];
       const freq = exactFreq(pNum, pDen);
-      // Fade out old voice quickly
-      oldVoice.stop(40);
-      // Start new voice with updated partial count, no attack click
+      entry.voice.stop(40);
       const newVoice = new Voice(ac, freq, pc);
-      chordVoicesRef.current.set(padIdx, newVoice);
+      chordVoicesRef.current.set(touchId, { voice: newVoice, padIndex: entry.padIndex });
     }
   }
 
@@ -363,16 +393,26 @@ export default function Home() {
       ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
       ctx.stroke();
 
-      // Ratio label
+      // Ratio label — brightness scales with fraction simplicity
       const [num, den] = RATIOS[pad.ratioIndex];
       const label = `${num}/${den}`;
       const fontSize = Math.max(9, Math.min(13, pad.w * 0.36));
       ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillStyle = isLit
-        ? COLOR.ratioTextLit
-        : isCenter ? COLOR.ratioTextCenter : COLOR.ratioText;
+      if (isLit) {
+        ctx.fillStyle = COLOR.ratioTextLit;
+      } else if (isCenter) {
+        ctx.fillStyle = COLOR.ratioTextCenter;
+      } else {
+        // Interpolate between dim (#4a6a80) and bright (#c8dce8) by complexity
+        const b = ratioBrightness(num, den);
+        // Parse base color components: dim = (74,106,128), bright = (200,220,232)
+        const r = Math.round(74  + b * (200 - 74));
+        const g = Math.round(106 + b * (220 - 106));
+        const bv = Math.round(128 + b * (232 - 128));
+        ctx.fillStyle = `rgb(${r},${g},${bv})`;
+      }
       ctx.fillText(label, pad.x + pad.w / 2, pad.y + pad.h / 2);
     }
 
@@ -558,13 +598,12 @@ export default function Home() {
     touchMapRef.current.set(id, pad.index);
 
     if (pad.row === "chord") {
-      // Add new note then rebuild all voices for the new chord size
+      // Each touch ID owns its own Voice — no collision when two fingers share a pad
       const [pNum, pDen] = RATIOS[pad.ratioIndex];
-      const freq = exactFreq(pNum, pDen);
       const ac = getAC();
-      // Temporarily insert a placeholder so size is correct before rebuild
-      chordVoicesRef.current.set(pad.index, new Voice(ac, freq, 1));
-      litChordRef.current.add(pad.index);
+      // Insert placeholder keyed by touch ID so rebuildChord sees the correct size
+      chordVoicesRef.current.set(id, { voice: new Voice(ac, exactFreq(pNum, pDen), 1), padIndex: pad.index });
+      padRefAdd(pad.index);
       rebuildChord();
 
     } else {
@@ -591,13 +630,13 @@ export default function Home() {
     if (padIndex == null) return;
 
     if (padIndex < N_PADS) {
-      // CHORD pad — remove note, then rebuild remaining voices with more partials
-      const voice = chordVoicesRef.current.get(padIndex);
-      if (voice) {
-        voice.stop(120);
-        chordVoicesRef.current.delete(padIndex);
+      // Stop this touch's own voice (keyed by touch ID, not pad index)
+      const entry = chordVoicesRef.current.get(id);
+      if (entry) {
+        entry.voice.stop(120);
+        chordVoicesRef.current.delete(id);
       }
-      litChordRef.current.delete(padIndex);
+      padRefRemove(padIndex);
       // Rebuild remaining voices now that chord is smaller
       rebuildChord();
     }
@@ -616,12 +655,12 @@ export default function Home() {
 
     // Release the old pad if it was a CHORD pad
     if (prevIndex != null && prevIndex < N_PADS) {
-      const voice = chordVoicesRef.current.get(prevIndex);
-      if (voice) {
-        voice.stop(60);
-        chordVoicesRef.current.delete(prevIndex);
+      const entry = chordVoicesRef.current.get(id);
+      if (entry) {
+        entry.voice.stop(60);
+        chordVoicesRef.current.delete(id);
       }
-      litChordRef.current.delete(prevIndex);
+      padRefRemove(prevIndex);
     }
 
     touchMapRef.current.set(id, newIndex);
@@ -629,12 +668,11 @@ export default function Home() {
     if (newIndex == null || !pad) return;
 
     if (pad.row === "chord") {
-      // Insert placeholder then rebuild all voices for current chord size
+      // Insert placeholder keyed by touch ID then rebuild
       const [pNum, pDen] = RATIOS[pad.ratioIndex];
-      const freq = exactFreq(pNum, pDen);
       const ac = getAC();
-      chordVoicesRef.current.set(newIndex, new Voice(ac, freq, 1));
-      litChordRef.current.add(newIndex);
+      chordVoicesRef.current.set(id, { voice: new Voice(ac, exactFreq(pNum, pDen), 1), padIndex: pad.index });
+      padRefAdd(pad.index);
       rebuildChord();
     } else {
       // Sliding into a NEXT pad fires it once — silent, flash only
@@ -707,7 +745,7 @@ export default function Home() {
       window.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mouseup",   onMouseUp);
       window.removeEventListener("mousemove", onMouseMove);
-      Array.from(chordVoicesRef.current.values()).forEach(v => v.stop(0));
+      Array.from(chordVoicesRef.current.values()).forEach(e => e.voice.stop(0));
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally empty — handlers use refs, never stale
