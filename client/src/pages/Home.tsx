@@ -249,6 +249,52 @@ interface NextEvent {
   time:       number;  // performance.now() ms
 }
 
+// ─── Recording / Playback ─────────────────────────────────────────────────────
+// A recorded event is either a CHORD note (with start+end relative ms) or a NEXT tap.
+type RecordedEvent =
+  | { kind: "chord"; ratioIndex: number; startMs: number; endMs: number }
+  | { kind: "next";  ratioIndex: number; timeMs:  number };
+
+function eventsToCSV(events: RecordedEvent[]): string {
+  const lines = ["type,ratioIndex,ratio,startMs,endMs"];
+  for (const ev of events) {
+    const [num, den] = RATIOS[ev.ratioIndex];
+    if (ev.kind === "chord") {
+      lines.push(`chord,${ev.ratioIndex},${num}/${den},${ev.startMs.toFixed(1)},${ev.endMs.toFixed(1)}`);
+    } else {
+      lines.push(`next,${ev.ratioIndex},${num}/${den},${ev.timeMs.toFixed(1)},`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function csvToEvents(csv: string): RecordedEvent[] {
+  const events: RecordedEvent[] = [];
+  for (const line of csv.split("\n").slice(1)) {
+    const parts = line.trim().split(",");
+    if (parts.length < 4) continue;
+    const [kind, riStr, , startStr, endStr] = parts;
+    const ri = parseInt(riStr, 10);
+    if (isNaN(ri) || ri < 0 || ri >= RATIOS.length) continue;
+    if (kind === "chord") {
+      events.push({ kind: "chord", ratioIndex: ri, startMs: parseFloat(startStr), endMs: parseFloat(endStr) });
+    } else if (kind === "next") {
+      events.push({ kind: "next", ratioIndex: ri, timeMs: parseFloat(startStr) });
+    }
+  }
+  return events;
+}
+
+function downloadCSV(csv: string) {
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `rno-recording-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // Pixels per millisecond — staff scroll speed.
 // 100 px/s = 0.1 px/ms. One beat line per second = 100 px apart.
 const SCROLL_PX_PER_MS = 0.1;
@@ -290,7 +336,10 @@ export default function Home() {
   const resetBtnRef    = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const basePlusBtnRef  = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const baseMinusBtnRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
-  const aboutBtnRef    = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const aboutBtnRef      = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const recordBtnRef     = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const playFileBtnRef   = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const playBtnRef       = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // Display state (React — drives text re-render)
   const [display, setDisplay] = useState<DisplayState>({ base: 432, modeNum: 1, modeDen: 1 });
@@ -305,6 +354,29 @@ export default function Home() {
   const staffNotesRef = useRef<NoteEvent[]>([]);
   // Staff / timeline: NEXT tap events (vertical green lines)
   const staffNextRef  = useRef<NextEvent[]>([]);
+
+  // ── Recording ──
+  const isRecordingRef    = useRef(false);          // true while recording
+  const recordStartRef    = useRef(0);              // performance.now() at record-start
+  const recordedEventsRef = useRef<RecordedEvent[]>([]);
+  // Open chord events during recording: touchId → { ratioIndex, startMs }
+  const recOpenRef = useRef<Map<number, { ratioIndex: number; startMs: number }>>(new Map());
+
+  // ── Playback ──
+  const loadedEventsRef  = useRef<RecordedEvent[]>([]);  // parsed from file
+  const isPlayingRef     = useRef(false);
+  const playTimersRef    = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Playback voices keyed by a synthetic ID (negative, to avoid clashing with real touch IDs)
+  const playVoicesRef    = useRef<Map<number, { voice: Voice; ratioIndex: number }>>(new Map());
+  let   playVoiceCounter = 0; // local counter, reset on each playback start
+
+  // React state for button rendering
+  const [isRecording, setIsRecording] = useState(false);
+  const [isPlaying,   setIsPlaying]   = useState(false);
+  const [hasFile,     setHasFile]     = useState(false);
+
+  // Hidden file input ref
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // RAF
   const rafRef = useRef<number>(0);
@@ -388,6 +460,131 @@ export default function Home() {
     baseRef.current = Math.max(20, baseRef.current + delta);
     retuneChord(30);
     pushDisplay();
+  }, []);
+
+  // ── Toggle RECORD ──
+  const doToggleRecord = useCallback(() => {
+    if (!isRecordingRef.current) {
+      // Start recording
+      isRecordingRef.current = true;
+      recordStartRef.current = performance.now();
+      recordedEventsRef.current = [];
+      recOpenRef.current.clear();
+      setIsRecording(true);
+    } else {
+      // Stop recording — close any still-open chord events
+      const now = performance.now();
+      for (const [, open] of Array.from(recOpenRef.current)) {
+        recordedEventsRef.current.push({
+          kind: "chord",
+          ratioIndex: open.ratioIndex,
+          startMs: open.startMs,
+          endMs: now - recordStartRef.current,
+        });
+      }
+      recOpenRef.current.clear();
+      isRecordingRef.current = false;
+      setIsRecording(false);
+      // Export CSV
+      if (recordedEventsRef.current.length > 0) {
+        downloadCSV(eventsToCSV(recordedEventsRef.current));
+      }
+    }
+  }, []);
+
+  // ── Stop playback ──
+  const doStopPlayback = useCallback(() => {
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+    // Cancel all pending timers
+    for (const t of playTimersRef.current) clearTimeout(t);
+    playTimersRef.current = [];
+    // Stop all playback voices
+    for (const { voice } of Array.from(playVoicesRef.current.values())) voice.stop(80);
+    playVoicesRef.current.clear();
+  }, []);
+
+  // ── Start playback ──
+  const doStartPlayback = useCallback(() => {
+    const events = loadedEventsRef.current;
+    if (events.length === 0) return;
+    doStopPlayback();
+    isPlayingRef.current = true;
+    setIsPlaying(true);
+    let counter = 0;
+
+    for (const ev of events) {
+      if (ev.kind === "chord") {
+        const voiceId = -(++counter);
+        // Note-on
+        const tOn = playTimersRef.current.length;
+        playTimersRef.current.push(setTimeout(() => {
+          if (!isPlayingRef.current) return;
+          const ac = getAC();
+          const [pNum, pDen] = RATIOS[ev.ratioIndex];
+          const freq = baseRef.current * modeNumRef.current * pNum / (modeDenRef.current * pDen);
+          const voice = new Voice(ac, freq, 4);
+          playVoicesRef.current.set(voiceId, { voice, ratioIndex: ev.ratioIndex });
+          // Staff: open note
+          staffNotesRef.current.push({ ratioIndex: ev.ratioIndex, startTime: performance.now(), endTime: -1 });
+        }, ev.startMs));
+        // Note-off
+        playTimersRef.current.push(setTimeout(() => {
+          if (!isPlayingRef.current) return;
+          const entry = playVoicesRef.current.get(voiceId);
+          if (entry) {
+            entry.voice.stop(120);
+            playVoicesRef.current.delete(voiceId);
+          }
+          // Staff: close note
+          const notes = staffNotesRef.current;
+          for (let i = notes.length - 1; i >= 0; i--) {
+            if (notes[i].ratioIndex === ev.ratioIndex && notes[i].endTime === -1) {
+              notes[i].endTime = performance.now();
+              break;
+            }
+          }
+        }, ev.endMs));
+      } else {
+        // NEXT event
+        playTimersRef.current.push(setTimeout(() => {
+          if (!isPlayingRef.current) return;
+          const [num, den] = RATIOS[ev.ratioIndex];
+          modeNumRef.current *= num;
+          modeDenRef.current *= den;
+          const g = gcd(modeNumRef.current, modeDenRef.current);
+          modeNumRef.current /= g;
+          modeDenRef.current /= g;
+          pushDisplay();
+          retuneChord(30);
+          // Retune any playing playback voices too
+          for (const { voice, ratioIndex } of Array.from(playVoicesRef.current.values())) {
+            const [pNum, pDen] = RATIOS[ratioIndex];
+            voice.retune(baseRef.current * modeNumRef.current * pNum / (modeDenRef.current * pDen), 30);
+          }
+          staffNextRef.current.push({ ratioIndex: ev.ratioIndex, time: performance.now() });
+        }, ev.timeMs));
+      }
+    }
+
+    // Auto-stop when last event has passed
+    const lastTime = events.reduce((m, e) =>
+      Math.max(m, e.kind === "chord" ? e.endMs : e.timeMs), 0);
+    playTimersRef.current.push(setTimeout(() => {
+      doStopPlayback();
+    }, lastTime + 500));
+  }, [doStopPlayback]);
+
+  // ── Load file ──
+  const doLoadFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const events = csvToEvents(text);
+      loadedEventsRef.current = events;
+      setHasFile(events.length > 0);
+    };
+    reader.readAsText(file);
   }, []);
 
   // ── Draw loop ──
@@ -698,11 +895,71 @@ export default function Home() {
     ctx.fillStyle = "rgba(120,160,200,0.5)";
     ctx.fillText("Relative Notation Organ by Martin Kol\u00e1\u0159", W / 2, topBand / 2);
 
+    // Left-side controls: [● REC] [LOAD] [▶/■]
+    const recW     = 52;
+    const loadW    = 52;
+    const playW    = 36;
+    const spacing  = 6;
+    let lx = margin;
+
+    // RECORD button
+    const recordBtn = { x: lx, y: btnY, w: recW, h: btnH };
+    recordBtnRef.current = recordBtn;
+    roundRect(ctx, recordBtn.x, recordBtn.y, recordBtn.w, recordBtn.h, btnR);
+    ctx.fillStyle = isRecording ? "rgba(200,40,40,0.85)" : COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = isRecording ? "#ff6060" : "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Red circle icon
+    const dotR2 = Math.max(3, btnH * 0.22);
+    ctx.fillStyle = isRecording ? "#fff" : "#e05050";
+    ctx.beginPath();
+    ctx.arc(recordBtn.x + 10, recordBtn.y + btnH / 2, dotR2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = `600 ${Math.max(9, Math.min(10, topBand * 0.40))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = isRecording ? "#fff" : COLOR.btnText;
+    ctx.fillText(isRecording ? "STOP" : "REC", recordBtn.x + 18, recordBtn.y + btnH / 2);
+    lx += recW + spacing;
+
+    // LOAD FILE button
+    const playFileBtn = { x: lx, y: btnY, w: loadW, h: btnH };
+    playFileBtnRef.current = playFileBtn;
+    roundRect(ctx, playFileBtn.x, playFileBtn.y, playFileBtn.w, playFileBtn.h, btnR);
+    ctx.fillStyle = COLOR.btnBg;
+    ctx.fill();
+    ctx.strokeStyle = hasFile ? "#40b080" : "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.font = `600 ${Math.max(9, Math.min(10, topBand * 0.40))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = hasFile ? "#40d090" : COLOR.btnText;
+    ctx.fillText("LOAD", playFileBtn.x + playFileBtn.w / 2, playFileBtn.y + playFileBtn.h / 2);
+    lx += loadW + spacing;
+
+    // PLAY / STOP button
+    const playBtn = { x: lx, y: btnY, w: playW, h: btnH };
+    playBtnRef.current = playBtn;
+    const playEnabled = hasFile || isPlaying;
+    roundRect(ctx, playBtn.x, playBtn.y, playBtn.w, playBtn.h, btnR);
+    ctx.fillStyle = isPlaying ? "rgba(40,160,80,0.85)" : (playEnabled ? "rgba(30,120,60,0.6)" : COLOR.btnBg);
+    ctx.fill();
+    ctx.strokeStyle = isPlaying ? "#60ff90" : (playEnabled ? "#40b070" : "#2a3a50");
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = playEnabled ? "#90ffb0" : "rgba(120,160,140,0.4)";
+    ctx.font = `700 ${Math.max(11, Math.min(14, topBand * 0.55))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(isPlaying ? "■" : "▶", playBtn.x + playBtn.w / 2, playBtn.y + playBtn.h / 2);
+
     // Right-side controls: [?] [−] [+] [RESET]
     const resetW  = 52;
     const arrowW  = 28;
     const aboutW  = 28;
-    const spacing = 6;
     let rx = W - margin;
 
     // RESET
@@ -776,7 +1033,7 @@ export default function Home() {
     ctx.fillText("−", minusBtn.x + minusBtn.w / 2, minusBtn.y + minusBtn.h / 2);
 
     rafRef.current = requestAnimationFrame(draw);
-  }, [display]);
+  }, [display, isRecording, isPlaying, hasFile]);
 
   // ── Hit test top-band buttons ──
   function hitBtn(
@@ -810,6 +1067,25 @@ export default function Home() {
       touchMapRef.current.set(id, null);
       return;
     }
+    if (hitBtn(recordBtnRef.current, px, py)) {
+      doToggleRecord();
+      touchMapRef.current.set(id, null);
+      return;
+    }
+    if (hitBtn(playFileBtnRef.current, px, py)) {
+      fileInputRef.current?.click();
+      touchMapRef.current.set(id, null);
+      return;
+    }
+    if (hitBtn(playBtnRef.current, px, py)) {
+      if (isPlayingRef.current) {
+        doStopPlayback();
+      } else if (loadedEventsRef.current.length > 0) {
+        doStartPlayback();
+      }
+      touchMapRef.current.set(id, null);
+      return;
+    }
 
     const pad = hitPad(padsRef.current, px, py);
     if (!pad) {
@@ -829,6 +1105,13 @@ export default function Home() {
       rebuildChord();
       // Record note-on for the staff
       staffNotesRef.current.push({ ratioIndex: pad.ratioIndex, startTime: performance.now(), endTime: -1 });
+      // Recording: open a chord event keyed by touch ID
+      if (isRecordingRef.current) {
+        recOpenRef.current.set(id, {
+          ratioIndex: pad.ratioIndex,
+          startMs: performance.now() - recordStartRef.current,
+        });
+      }
 
     } else {
       // NEXT: multiply MODE
@@ -847,6 +1130,14 @@ export default function Home() {
       flashRef.current.set(pad.index, performance.now() + 150);
       // Record NEXT event for the staff (vertical green line)
       staffNextRef.current.push({ ratioIndex: pad.ratioIndex, time: performance.now() });
+      // Recording: save NEXT event
+      if (isRecordingRef.current) {
+        recordedEventsRef.current.push({
+          kind: "next",
+          ratioIndex: pad.ratioIndex,
+          timeMs: performance.now() - recordStartRef.current,
+        });
+      }
     }
   }, [doReset, doBaseChange]);
 
@@ -867,6 +1158,19 @@ export default function Home() {
           if (notes[i].ratioIndex === entry.padIndex && notes[i].endTime === -1) {
             notes[i].endTime = performance.now();
             break;
+          }
+        }
+        // Recording: close the chord event for this touch ID
+        if (isRecordingRef.current) {
+          const open = recOpenRef.current.get(id);
+          if (open) {
+            recordedEventsRef.current.push({
+              kind: "chord",
+              ratioIndex: open.ratioIndex,
+              startMs: open.startMs,
+              endMs: performance.now() - recordStartRef.current,
+            });
+            recOpenRef.current.delete(id);
           }
         }
       }
@@ -901,6 +1205,19 @@ export default function Home() {
             break;
           }
         }
+        // Recording: close the chord event for this touch ID
+        if (isRecordingRef.current) {
+          const open = recOpenRef.current.get(id);
+          if (open) {
+            recordedEventsRef.current.push({
+              kind: "chord",
+              ratioIndex: open.ratioIndex,
+              startMs: open.startMs,
+              endMs: performance.now() - recordStartRef.current,
+            });
+            recOpenRef.current.delete(id);
+          }
+        }
       }
       padRefRemove(prevIndex);
     }
@@ -918,6 +1235,13 @@ export default function Home() {
       rebuildChord();
       // Record note-on for the staff
       staffNotesRef.current.push({ ratioIndex: pad.ratioIndex, startTime: performance.now(), endTime: -1 });
+      // Recording: open a new chord event
+      if (isRecordingRef.current) {
+        recOpenRef.current.set(id, {
+          ratioIndex: pad.ratioIndex,
+          startMs: performance.now() - recordStartRef.current,
+        });
+      }
     } else {
       // Sliding into a NEXT pad fires it once — silent, flash only
       const [num, den] = RATIOS[pad.ratioIndex];
@@ -931,6 +1255,14 @@ export default function Home() {
       flashRef.current.set(newIndex, performance.now() + 150);
       // Record NEXT event for the staff (vertical green line)
       staffNextRef.current.push({ ratioIndex: pad.ratioIndex, time: performance.now() });
+      // Recording: save NEXT event
+      if (isRecordingRef.current) {
+        recordedEventsRef.current.push({
+          kind: "next",
+          ratioIndex: pad.ratioIndex,
+          timeMs: performance.now() - recordStartRef.current,
+        });
+      }
     }
   }, []);
 
@@ -1034,6 +1366,19 @@ export default function Home() {
           Rotate device to landscape to play
         </div>
       )}
+      {/* Hidden file input for LOAD button */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) doLoadFile(file);
+          // Reset so the same file can be re-selected
+          e.target.value = "";
+        }}
+      />
     </>
   );
 }
