@@ -113,7 +113,9 @@ class Voice {
 interface Pad {
   index: number;
   row: "chord" | "next";
+  shape: "rect" | "circle";
   ratioIndex: number;
+  // bounding box (for circle: x=cx-r, y=cy-r, w=h=diameter)
   x: number; y: number; w: number; h: number;
 }
 
@@ -121,51 +123,76 @@ const N_PADS = 25; // total pads per row
 const CENTER_IDX = 12; // index of 1/1
 
 // Staff occupies 1/3 of the playable area (below the top band).
-// The two pad rows share the remaining 2/3.
+// NEXT circles sit in a compact strip immediately below the staff.
+// CHORD rects fill the remaining height below that.
 function staffHeight(H: number): number {
   const topBand = Math.round(H * 0.08);
   return Math.round((H - topBand) / 3);
 }
 
 function buildPads(W: number, H: number): Pad[] {
-  const topBand = Math.round(H * 0.08);
-  const staffH  = staffHeight(H);
-  const rowH    = Math.round((H - topBand - staffH) / 2);
-  const padW    = W / N_PADS;
+  const topBand    = Math.round(H * 0.08);
+  const staffH     = staffHeight(H);
+  const playH      = H - topBand - staffH;
+  const padW       = W / N_PADS;
+
+  // NEXT circles: diameter = padW * 0.82, clamped 18..56 px
+  const circleD    = Math.max(18, Math.min(56, padW * 0.82));
+  const circleR    = circleD / 2;
+  const nextStripH = Math.round(circleD + 10); // 5 px padding top + bottom
+
+  // CHORD rects take the rest
+  const chordH     = playH - nextStripH;
+  const gap        = 2;
+
+  const nextStripY = topBand + staffH;          // NEXT strip top
+  const chordY     = nextStripY + nextStripH;   // CHORD rect top
+
   const pads: Pad[] = [];
-  const gap = 2;
 
-  const chordY = topBand + staffH;
-  const nextY  = chordY + rowH;
-
+  // CHORD pads (indices 0..N_PADS-1)
   for (let i = 0; i < N_PADS; i++) {
     pads.push({
       index: i,
       row: "chord",
+      shape: "rect",
       ratioIndex: i,
       x: i * padW + gap / 2,
       y: chordY + gap / 2,
       w: padW - gap,
-      h: rowH - gap,
+      h: chordH - gap,
     });
   }
+
+  // NEXT pads (indices N_PADS..2*N_PADS-1) — circles
   for (let i = 0; i < N_PADS; i++) {
+    const cx = i * padW + padW / 2;
+    const cy = nextStripY + nextStripH / 2;
     pads.push({
       index: i + N_PADS,
       row: "next",
+      shape: "circle",
       ratioIndex: i,
-      x: i * padW + gap / 2,
-      y: nextY + gap / 2,
-      w: padW - gap,
-      h: rowH - gap,
+      x: cx - circleR,
+      y: cy - circleR,
+      w: circleD,
+      h: circleD,
     });
   }
+
   return pads;
 }
 
 function hitPad(pads: Pad[], px: number, py: number): Pad | null {
   for (const p of pads) {
-    if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+    if (p.shape === "circle") {
+      const cx = p.x + p.w / 2;
+      const cy = p.y + p.h / 2;
+      const r  = p.w / 2;
+      if ((px - cx) ** 2 + (py - cy) ** 2 <= r * r) return p;
+    } else {
+      if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+    }
   }
   return null;
 }
@@ -813,29 +840,25 @@ export default function Home() {
         ? litChordRef.current.has(pad.index)
         : (flashRef.current.get(pad.index) ?? 0) > now;
 
-      // Brightness drives the pad background fill
       const [num, den] = RATIOS[pad.ratioIndex];
-      const b = ratioBrightness(num, den); // 0..1
+      const b = ratioBrightness(num, den);
 
       let baseColor: string;
       let borderColor: string;
       if (isLit) {
-        // Lit: use row accent colour (unchanged)
         baseColor   = isChord ? COLOR.chordLit : COLOR.nextLit;
         borderColor = baseColor;
       } else if (isChord) {
-        // CHORD unlit: interpolate from darkest (#0d1520) to brightest (#2a5080)
         const r  = Math.round(13  + b * (42  - 13));
         const g  = Math.round(21  + b * (80  - 21));
         const bv = Math.round(32  + b * (128 - 32));
         baseColor   = `rgb(${r},${g},${bv})`;
-        // Border slightly brighter than fill
         const rb = Math.round(20  + b * (60  - 20));
         const gb = Math.round(40  + b * (120 - 40));
         const bb = Math.round(60  + b * (160 - 60));
         borderColor = `rgb(${rb},${gb},${bb})`;
       } else {
-        // NEXT unlit: interpolate from darkest (#0d1a0d) to brightest (#1e4a1e)
+        // NEXT circle unlit
         const r  = Math.round(13  + b * (30  - 13));
         const g  = Math.round(26  + b * (74  - 26));
         const bv = Math.round(13  + b * (30  - 13));
@@ -846,50 +869,74 @@ export default function Home() {
         borderColor = `rgb(${rb},${gb},${bb})`;
       }
 
-      roundRect(ctx, pad.x, pad.y, pad.w, pad.h, 5);
-      ctx.fillStyle = baseColor;
-      ctx.fill();
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
-      ctx.stroke();
+      const cx = pad.x + pad.w / 2;
+      const cy = pad.y + pad.h / 2;
 
-      // Ratio label — always light enough to read; slightly brighter for simpler ratios
-      const label = `${num}/${den}`;
-      const fontSize = Math.max(9, Math.min(13, pad.w * 0.36));
-      ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      if (isLit) {
-        ctx.fillStyle = COLOR.ratioTextLit;
+      if (pad.shape === "circle") {
+        // Draw circle
+        const r = pad.w / 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = baseColor;
+        ctx.fill();
+        ctx.strokeStyle = isCenter && !isLit ? "rgba(100,200,120,0.8)" : borderColor;
+        ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
+        ctx.stroke();
+        // Label inside circle
+        const label = `${num}/${den}`;
+        const fontSize = Math.max(6, Math.min(11, r * 0.72));
+        ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        if (isLit) {
+          ctx.fillStyle = COLOR.ratioTextLit;
+        } else {
+          const lt = 0.40 + b * 0.60;
+          ctx.fillStyle = `rgb(${Math.round(lt*180)},${Math.round(lt*220)},${Math.round(lt*180)})`;
+        }
+        ctx.fillText(label, cx, cy);
       } else {
-        // Label brightness: dim floor 0.45, bright ceiling 1.0
-        const lt = 0.45 + b * 0.55;
-        const lr = Math.round(lt * 200);
-        const lg = Math.round(lt * 220);
-        const lb = Math.round(lt * 232);
-        ctx.fillStyle = `rgb(${lr},${lg},${lb})`;
+        // Draw rect (CHORD)
+        roundRect(ctx, pad.x, pad.y, pad.w, pad.h, 5);
+        ctx.fillStyle = baseColor;
+        ctx.fill();
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
+        ctx.stroke();
+        const label = `${num}/${den}`;
+        const fontSize = Math.max(9, Math.min(13, pad.w * 0.36));
+        ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        if (isLit) {
+          ctx.fillStyle = COLOR.ratioTextLit;
+        } else {
+          const lt = 0.45 + b * 0.55;
+          ctx.fillStyle = `rgb(${Math.round(lt*200)},${Math.round(lt*220)},${Math.round(lt*232)})`;
+        }
+        ctx.fillText(label, cx, cy);
       }
-      ctx.fillText(label, pad.x + pad.w / 2, pad.y + pad.h / 2);
     }
 
-    // ── Direction markers below CHORD row, above NEXT row ──
+    // ── Direction markers: thin coloured strip between NEXT circles and CHORD rects ──
     if (pads.length > 0) {
-      const cp0  = pads[0];
-      const cpC  = pads[CENTER_IDX];
-      const midY = cpC.y + cpC.h + 1;
-      const markerH = pads[N_PADS].y - midY - 1; // gap between rows
-      if (markerH > 0) {
-        // left arrow area
-        ctx.fillStyle = "rgba(80,140,220,0.18)";
-        ctx.fillRect(cp0.x, midY, cpC.x - cp0.x, markerH);
-        // right arrow area
-        const cpLast = pads[N_PADS - 1];
-        ctx.fillStyle = "rgba(80,200,120,0.18)";
-        ctx.fillRect(cpC.x + cpC.w, midY, (cpLast.x + cpLast.w) - (cpC.x + cpC.w), markerH);
+      // NEXT circles are pads[N_PADS..2*N_PADS-1]; CHORD rects are pads[0..N_PADS-1]
+      const nextCenter = pads[N_PADS + CENTER_IDX]; // centre NEXT circle
+      const chordFirst = pads[0];
+      const chordLast  = pads[N_PADS - 1];
+      const stripTop   = nextCenter.y + nextCenter.h + 2;
+      const stripBot   = chordFirst.y - 2;
+      const stripH     = stripBot - stripTop;
+      if (stripH > 0) {
+        ctx.fillStyle = "rgba(80,140,220,0.15)";
+        ctx.fillRect(chordFirst.x, stripTop, nextCenter.x - chordFirst.x, stripH);
+        ctx.fillStyle = "rgba(80,200,120,0.15)";
+        ctx.fillRect(nextCenter.x + nextCenter.w, stripTop,
+          (chordLast.x + chordLast.w) - (nextCenter.x + nextCenter.w), stripH);
       }
     }
 
-    // ── Row labels — drawn vertically centred in each row, right-aligned after the last pad ──
+    // ── Row labels — right-aligned, vertically centred in each row ──
     if (pads.length > 0) {
       const labelFontSize = Math.max(8, Math.min(11, topBand * 0.45));
       ctx.font = `500 ${labelFontSize}px 'DM Sans', sans-serif`;
