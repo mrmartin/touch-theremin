@@ -1,3 +1,16 @@
+# Relative Notation Organ
+
+A just-intonation polyphonic instrument. Hold CHORD pads to sustain notes; tap NEXT pads to multiply the mode ratio and transpose the chord.
+
+### **[▶ TRY IT HERE](http://mrmartin.net/touch-theremin/)**
+
+<p align="center">
+  <img src="simple.png" alt="Simple mode" width="48%" />
+  <img src="piano.png" alt="Piano mode" width="48%" />
+</p>
+
+---
+
 # Web App Template (Static Frontend)
 
 Pure React 19 + Tailwind 4 template with shadcn/ui baked in. **Use this README as the checklist for shipping static experiences.**
