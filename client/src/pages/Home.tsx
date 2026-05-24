@@ -320,20 +320,23 @@ function ratioBrightness(num: number, den: number): number {
   return 0.08;               // height 11, 12 — most complex
 }
 
-// ─── SIMPLE CHORD denominator → brightness [0..1] ────────────────────────────
-// Used only for SIMPLE mode CHORD pad backgrounds.
-// Denominator of the reduced ratio determines the tier:
-//   den 1 or 2 → 1.00 (brightest: 1/1, 1/2, 2/1, 3/2, 4/1, 5/2, 3/1, 6/1 etc.)
-//   den 3      → 0.65
-//   den 4      → 0.38
-//   den 5      → 0.18 (darkest)
+// ─── SIMPLE CHORD brightness [0..1] ─────────────────────────────────────────
+// Symmetric: the brightness of a ratio is determined by the denominator of
+// whichever side (num or den) is ≥ 1 after reduction — i.e. min(rn, rd).
+// This makes 6/1 mirror 1/6, 5/1 mirror 1/5, etc.
+//   min 1 or 2 → 1.00 (brightest: 1/1, 1/2, 2/1, 2/3, 3/2, 2/5, 5/2 …)
+//   min 3      → 0.65 (1/3, 3/1, 3/4, 4/3, 3/5, 5/3 …)
+//   min 4      → 0.38 (1/4, 4/1, 4/5, 5/4 …)
+//   min 5      → 0.18 (darkest: 1/5, 5/1, 1/6, 6/1, 5/6, 6/5 …)
 function simpleDenBrightness(num: number, den: number): number {
   const g = gcd(num, den);
-  const rd = den / g;  // reduced denominator
-  if (rd <= 2) return 1.00;
-  if (rd <= 3) return 0.65;
-  if (rd <= 4) return 0.38;
-  return 0.18;         // den 5 (and any higher, though SIMPLE set only goes to 6/1)
+  const rn = num / g;
+  const rd = den / g;
+  const tier = Math.min(rn, rd);  // symmetric: use the smaller of the two
+  if (tier <= 2) return 1.00;
+  if (tier <= 3) return 0.65;
+  if (tier <= 4) return 0.38;
+  return 0.18;         // tier 5 or 6 — outermost keys
 }
 
 // ─── Rounded rect helper ──────────────────────────────────────────────────────
