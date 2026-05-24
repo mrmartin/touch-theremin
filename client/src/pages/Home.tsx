@@ -130,7 +130,7 @@ function staffHeight(H: number): number {
   return Math.round((H - topBand) / 3);
 }
 
-function buildPads(W: number, H: number): Pad[] {
+function buildPads(W: number, H: number, piano = true): Pad[] {
   const topBand    = Math.round(H * 0.08);
   const staffH     = staffHeight(H);
   const playH      = H - topBand - staffH;
@@ -150,68 +150,47 @@ function buildPads(W: number, H: number): Pad[] {
 
   const pads: Pad[] = [];
 
-  // ── CHORD pads: piano-style layout ──
-  // White keys are full height and evenly spaced.
-  // Black keys are 60% height and 70% width, centred over the boundary
-  // between the two adjacent white keys they sit between.
+  if (piano) {
+    // ── PIANO layout: white keys full height, black keys 60% height / 70% width ──
+    const whiteCount = PIANO_KEYS.filter(k => k === "white").length; // 15
+    const whiteW     = W / whiteCount;
+    const blackW     = whiteW * 0.70;
+    const blackH     = chordH * 0.60;
 
-  const whiteCount = PIANO_KEYS.filter(k => k === "white").length; // 15
-  const whiteW     = W / whiteCount;  // width of each white key slot
-  const blackW     = whiteW * 0.70;
-  const blackH     = chordH * 0.60;
+    // Map ratio index → white key slot index (for black key positioning)
+    let whiteSlot = 0;
+    const slotOf: number[] = new Array(N_PADS).fill(0);
+    for (let i = 0; i < N_PADS; i++) {
+      slotOf[i] = whiteSlot;
+      if (PIANO_KEYS[i] === "white") whiteSlot++;
+    }
 
-  // Build an ordered list of white-key x positions (left edge of each slot)
-  const whiteXs: number[] = [];
-  for (let i = 0; i < N_PADS; i++) {
-    if (PIANO_KEYS[i] === "white") whiteXs.push(whiteXs.length * whiteW);
-  }
+    // White keys first (drawn behind black keys)
+    let wi = 0;
+    for (let i = 0; i < N_PADS; i++) {
+      if (PIANO_KEYS[i] !== "white") continue;
+      pads.push({ index: i, row: "chord", shape: "rect", ratioIndex: i,
+        x: wi * whiteW + gap / 2, y: chordY, w: whiteW - gap, h: chordH });
+      wi++;
+    }
 
-  // Map ratio index → white key slot index (for black key positioning)
-  let whiteSlot = 0;
-  const slotOf: number[] = new Array(N_PADS).fill(0);
-  for (let i = 0; i < N_PADS; i++) {
-    slotOf[i] = whiteSlot;
-    if (PIANO_KEYS[i] === "white") whiteSlot++;
-  }
-
-  // White keys first (drawn behind black keys)
-  let wi = 0;
-  for (let i = 0; i < N_PADS; i++) {
-    if (PIANO_KEYS[i] !== "white") continue;
-    pads.push({
-      index: i,
-      row: "chord",
-      shape: "rect",
-      ratioIndex: i,
-      x: wi * whiteW + gap / 2,
-      y: chordY,
-      w: whiteW - gap,
-      h: chordH,
-    });
-    wi++;
-  }
-
-  // Black keys on top (drawn in front)
-  for (let i = 0; i < N_PADS; i++) {
-    if (PIANO_KEYS[i] !== "black") continue;
-    // Centre the black key between the white key to its left and the one to its right.
-    // The left white key is slotOf[i]-1 (the last white before this black),
-    // the right white key is slotOf[i] (the next white after this black).
-    const leftSlot  = slotOf[i] - 1;
-    const rightSlot = slotOf[i];
-    const leftEdge  = leftSlot  >= 0           ? leftSlot  * whiteW : 0;
-    const rightEdge = rightSlot < whiteCount   ? rightSlot * whiteW + whiteW : W;
-    const cx        = (leftEdge + rightEdge) / 2;
-    pads.push({
-      index: i,
-      row: "chord",
-      shape: "rect",
-      ratioIndex: i,
-      x: cx - blackW / 2,
-      y: chordY,
-      w: blackW,
-      h: blackH,
-    });
+    // Black keys on top
+    for (let i = 0; i < N_PADS; i++) {
+      if (PIANO_KEYS[i] !== "black") continue;
+      const leftSlot  = slotOf[i] - 1;
+      const rightSlot = slotOf[i];
+      const leftEdge  = leftSlot  >= 0         ? leftSlot  * whiteW : 0;
+      const rightEdge = rightSlot < whiteCount ? rightSlot * whiteW + whiteW : W;
+      const cx        = (leftEdge + rightEdge) / 2;
+      pads.push({ index: i, row: "chord", shape: "rect", ratioIndex: i,
+        x: cx - blackW / 2, y: chordY, w: blackW, h: blackH });
+    }
+  } else {
+    // ── SIMPLE layout: equal-width rects, brightness-tinted ──
+    for (let i = 0; i < N_PADS; i++) {
+      pads.push({ index: i, row: "chord", shape: "rect", ratioIndex: i,
+        x: i * padW + gap / 2, y: chordY + gap / 2, w: padW - gap, h: chordH - gap });
+    }
   }
 
   // NEXT pads (indices N_PADS..2*N_PADS-1) — circles
@@ -233,26 +212,42 @@ function buildPads(W: number, H: number): Pad[] {
   return pads;
 }
 
-function hitPad(pads: Pad[], px: number, py: number): Pad | null {
-  // Priority order: circles, then black CHORD keys (on top), then white CHORD keys
-  // Pass 1: circles and black chord keys
-  for (const p of pads) {
-    if (p.shape === "circle") {
-      const cx = p.x + p.w / 2;
-      const cy = p.y + p.h / 2;
-      const r  = p.w / 2;
-      if ((px - cx) ** 2 + (py - cy) ** 2 <= r * r) return p;
-    } else if (p.row === "chord" && PIANO_KEYS[p.ratioIndex] === "black") {
-      if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+function hitPad(pads: Pad[], px: number, py: number, piano = true): Pad | null {
+  if (piano) {
+    // Priority order: circles, then black CHORD keys (on top), then white CHORD keys
+    for (const p of pads) {
+      if (p.shape === "circle") {
+        const cx = p.x + p.w / 2;
+        const cy = p.y + p.h / 2;
+        const r  = p.w / 2;
+        if ((px - cx) ** 2 + (py - cy) ** 2 <= r * r) return p;
+      } else if (p.row === "chord" && PIANO_KEYS[p.ratioIndex] === "black") {
+        if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+      }
     }
-  }
-  // Pass 2: white chord keys
-  for (const p of pads) {
-    if (p.row === "chord" && PIANO_KEYS[p.ratioIndex] === "white") {
-      if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+    for (const p of pads) {
+      if (p.row === "chord" && PIANO_KEYS[p.ratioIndex] === "white") {
+        if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+      }
     }
+    return null;
+  } else {
+    // SIMPLE: circles first, then linear scan of rects
+    for (const p of pads) {
+      if (p.shape === "circle") {
+        const cx = p.x + p.w / 2;
+        const cy = p.y + p.h / 2;
+        const r  = p.w / 2;
+        if ((px - cx) ** 2 + (py - cy) ** 2 <= r * r) return p;
+      }
+    }
+    for (const p of pads) {
+      if (p.shape !== "circle") {
+        if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return p;
+      }
+    }
+    return null;
   }
-  return null;
 }
 
 // ─── Piano key type per ratio index ─────────────────────────────────────────
@@ -379,8 +374,8 @@ type RecordedEvent =
   | { kind: "chord"; ratioIndex: number; startMs: number; endMs: number }
   | { kind: "next";  ratioIndex: number; timeMs:  number };
 
-function eventsToCSV(events: RecordedEvent[]): string {
-  const lines = ["type,ratioIndex,ratio,startMs,endMs"];
+function eventsToCSV(events: RecordedEvent[], piano: boolean): string {
+  const lines = [`#mode:${piano ? "PIANO" : "SIMPLE"}`, "type,ratioIndex,ratio,startMs,endMs"];
   for (const ev of events) {
     const [num, den] = RATIOS[ev.ratioIndex];
     if (ev.kind === "chord") {
@@ -392,9 +387,18 @@ function eventsToCSV(events: RecordedEvent[]): string {
   return lines.join("\n");
 }
 
-function csvToEvents(csv: string): RecordedEvent[] {
+function csvToEvents(csv: string): { events: RecordedEvent[]; mode: "PIANO" | "SIMPLE" | null } {
   const events: RecordedEvent[] = [];
-  for (const line of csv.split("\n").slice(1)) {
+  let mode: "PIANO" | "SIMPLE" | null = null;
+  const lines = csv.split("\n");
+  // Read optional mode header
+  let startLine = 0;
+  if (lines[0]?.startsWith("#mode:")) {
+    const m = lines[0].slice(6).trim().toUpperCase();
+    if (m === "PIANO" || m === "SIMPLE") mode = m;
+    startLine = 1;
+  }
+  for (const line of lines.slice(startLine + 1)) { // skip header row too
     const parts = line.trim().split(",");
     if (parts.length < 4) continue;
     const [kind, riStr, , startStr, endStr] = parts;
@@ -406,7 +410,7 @@ function csvToEvents(csv: string): RecordedEvent[] {
       events.push({ kind: "next", ratioIndex: ri, timeMs: parseFloat(startStr) });
     }
   }
-  return events;
+  return { events, mode };
 }
 
 function downloadCSV(csv: string) {
@@ -461,6 +465,7 @@ export default function Home() {
   const basePlusBtnRef  = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const baseMinusBtnRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const aboutBtnRef      = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const toggleBtnRef     = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const recordBtnRef     = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const playFileBtnRef   = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const playBtnRef       = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -504,6 +509,10 @@ export default function Home() {
   // DOM overlay positions for LOAD and PLAY buttons (updated each draw frame via state)
   const [loadBtnRect, setLoadBtnRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [playBtnRect, setPlayBtnRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  // SIMPLE / PIANO toggle
+  const [isPiano, setIsPiano] = useState(true);
+  const isPianoRef = useRef(true);
 
   // Hidden file input ref
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -618,7 +627,7 @@ export default function Home() {
       setIsRecording(false);
       // Export CSV
       if (recordedEventsRef.current.length > 0) {
-        downloadCSV(eventsToCSV(recordedEventsRef.current));
+        downloadCSV(eventsToCSV(recordedEventsRef.current, isPianoRef.current));
       }
     }
   }, []);
@@ -711,9 +720,27 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
-      const events = csvToEvents(text);
+      const { events, mode } = csvToEvents(text);
       loadedEventsRef.current = events;
       setHasFile(events.length > 0);
+      // Apply mode from CSV header
+      if (mode === "PIANO" && !isPianoRef.current) {
+        isPianoRef.current = true;
+        setIsPiano(true);
+        padsRef.current = buildPads(
+          canvasRef.current?.width  ?? window.innerWidth,
+          canvasRef.current?.height ?? window.innerHeight,
+          true
+        );
+      } else if (mode === "SIMPLE" && isPianoRef.current) {
+        isPianoRef.current = false;
+        setIsPiano(false);
+        padsRef.current = buildPads(
+          canvasRef.current?.width  ?? window.innerWidth,
+          canvasRef.current?.height ?? window.innerHeight,
+          false
+        );
+      }
     };
     reader.readAsText(file);
   }, []);
@@ -986,15 +1013,13 @@ export default function Home() {
           ctx.fillStyle = `rgb(${Math.round(lt*180)},${Math.round(lt*220)},${Math.round(lt*180)})`;
         }
         ctx.fillText(label, cx, cy);
-      } else {
+      } else if (isPiano) {
         // Draw CHORD key — piano style
         const isBlack = PIANO_KEYS[pad.ratioIndex] === "black";
         const radius  = isBlack ? 3 : 5;
-
         let keyFill: string;
         let keyStroke: string;
         let labelColor: string;
-
         if (isLit) {
           keyFill   = COLOR.chordLit;
           keyStroke = COLOR.chordLit;
@@ -1004,28 +1029,53 @@ export default function Home() {
           keyStroke = "#333344";
           labelColor = "rgba(180,200,220,0.75)";
         } else {
-          // White key — ivory tint
           keyFill   = isCenter ? "#e8f0ff" : "#f0f0ec";
           keyStroke = "#b0b0aa";
           labelColor = "#2a2a2a";
         }
-
         roundRect(ctx, pad.x, pad.y, pad.w, pad.h, radius);
         ctx.fillStyle = keyFill;
         ctx.fill();
         ctx.strokeStyle = keyStroke;
         ctx.lineWidth = isCenter && !isLit ? 2 : 1;
         ctx.stroke();
-
-        // Label near the bottom of the key
         const label = `${num}/${den}`;
         const fontSize = Math.max(8, Math.min(13, pad.w * 0.38));
         ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillStyle = isLit ? "#ffffff" : labelColor;
-        const labelY = pad.y + pad.h - 6;
-        ctx.fillText(label, cx, labelY);
+        ctx.fillText(label, cx, pad.y + pad.h - 6);
+      } else {
+        // Draw CHORD key — SIMPLE style (brightness-tinted rects)
+        const [rn, rd] = RATIOS[pad.ratioIndex];
+        const bv = ratioBrightness(rn, rd);
+        let keyFill: string;
+        let keyStroke: string;
+        if (isLit) {
+          keyFill   = COLOR.chordLit;
+          keyStroke = COLOR.chordLit;
+        } else {
+          const lv = 0.08 + bv * 0.22;
+          keyFill   = isCenter
+            ? `rgba(60,120,80,${0.18 + bv * 0.35})`
+            : `rgba(${Math.round(lv*255)},${Math.round(lv*280)},${Math.round(lv*255)},0.85)`;
+          keyStroke = isCenter ? "rgba(80,200,120,0.6)" : `rgba(${Math.round(bv*120)},${Math.round(bv*160)},${Math.round(bv*120)},0.5)`;
+        }
+        roundRect(ctx, pad.x, pad.y, pad.w, pad.h, 4);
+        ctx.fillStyle = keyFill;
+        ctx.fill();
+        ctx.strokeStyle = keyStroke;
+        ctx.lineWidth = isCenter && !isLit ? 1.5 : 1;
+        ctx.stroke();
+        const label = `${num}/${den}`;
+        const fontSize = Math.max(7, Math.min(12, pad.w * 0.38));
+        ctx.font = `600 ${fontSize}px 'DM Mono', monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const lt = 0.40 + bv * 0.60;
+        ctx.fillStyle = isLit ? "#ffffff" : `rgb(${Math.round(lt*180)},${Math.round(lt*220)},${Math.round(lt*180)})`;
+        ctx.fillText(label, cx, pad.y + pad.h / 2);
       }
     }
 
@@ -1225,8 +1275,42 @@ export default function Home() {
       : { x: playBtn.x, y: playBtn.y, w: playBtn.w, h: playBtn.h }
     );
 
+    // SIMPLE / PIANO toggle pill — drawn left of the PLAY button
+    const toggleW = 100;
+    rx -= spacing;
+    rx -= toggleW;
+    const toggleBtn = { x: rx, y: btnY, w: toggleW, h: btnH };
+    toggleBtnRef.current = toggleBtn;
+    // Pill background
+    roundRect(ctx, toggleBtn.x, toggleBtn.y, toggleBtn.w, toggleBtn.h, btnH / 2);
+    ctx.fillStyle = "#0d1a2a";
+    ctx.fill();
+    ctx.strokeStyle = "#2a3a50";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Active half highlight
+    const halfW = toggleW / 2;
+    if (isPiano) {
+      // Right half (PIANO) is active
+      roundRect(ctx, toggleBtn.x + halfW, toggleBtn.y, halfW, btnH, btnH / 2);
+    } else {
+      // Left half (SIMPLE) is active
+      roundRect(ctx, toggleBtn.x, toggleBtn.y, halfW, btnH, btnH / 2);
+    }
+    ctx.fillStyle = "rgba(60,140,200,0.55)";
+    ctx.fill();
+    // Labels
+    ctx.font = `700 ${Math.max(8, Math.min(10, topBand * 0.40))}px 'DM Sans', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const midY2 = toggleBtn.y + btnH / 2;
+    ctx.fillStyle = isPiano ? "rgba(160,190,210,0.5)" : "#e0f0ff";
+    ctx.fillText("SIMPLE", toggleBtn.x + halfW / 2, midY2);
+    ctx.fillStyle = isPiano ? "#e0f0ff" : "rgba(160,190,210,0.5)";
+    ctx.fillText("PIANO", toggleBtn.x + halfW + halfW / 2, midY2);
+
     rafRef.current = requestAnimationFrame(draw);
-  }, [display, isRecording, isPlaying, hasFile]);
+  }, [display, isRecording, isPlaying, hasFile, isPiano]);
 
   // ── Hit test top-band buttons ──
   function hitBtn(
@@ -1265,8 +1349,18 @@ export default function Home() {
       touchMapRef.current.set(id, null);
       return;
     }
+    if (hitBtn(toggleBtnRef.current, px, py)) {
+      const newPiano = !isPianoRef.current;
+      isPianoRef.current = newPiano;
+      setIsPiano(newPiano);
+      // Rebuild pads for new layout
+      const canvas = canvasRef.current;
+      if (canvas) padsRef.current = buildPads(canvas.width, canvas.height, newPiano);
+      touchMapRef.current.set(id, null);
+      return;
+    }
 
-    const pad = hitPad(padsRef.current, px, py);
+    const pad = hitPad(padsRef.current, px, py, isPianoRef.current);
     if (!pad) {
       touchMapRef.current.set(id, null);
       return;
@@ -1365,7 +1459,7 @@ export default function Home() {
     const prevIndex = touchMapRef.current.get(id);
     if (prevIndex === undefined) return; // touch not tracked
 
-    const pad = hitPad(padsRef.current, px, py);
+    const pad = hitPad(padsRef.current, px, py, isPianoRef.current);
     const newIndex = pad ? pad.index : null;
 
     if (newIndex === prevIndex) return; // still on the same pad, nothing to do
@@ -1451,7 +1545,7 @@ export default function Home() {
     if (!canvas) return;
     canvas.width  = window.innerWidth;
     canvas.height = window.innerHeight;
-    padsRef.current = buildPads(canvas.width, canvas.height);
+    padsRef.current = buildPads(canvas.width, canvas.height, isPianoRef.current);
     setPortrait(window.innerHeight > window.innerWidth);
   }, []);
 
