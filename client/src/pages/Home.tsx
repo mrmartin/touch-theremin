@@ -320,6 +320,22 @@ function ratioBrightness(num: number, den: number): number {
   return 0.08;               // height 11, 12 — most complex
 }
 
+// ─── SIMPLE CHORD denominator → brightness [0..1] ────────────────────────────
+// Used only for SIMPLE mode CHORD pad backgrounds.
+// Denominator of the reduced ratio determines the tier:
+//   den 1 or 2 → 1.00 (brightest: 1/1, 1/2, 2/1, 3/2, 4/1, 5/2, 3/1, 6/1 etc.)
+//   den 3      → 0.65
+//   den 4      → 0.38
+//   den 5      → 0.18 (darkest)
+function simpleDenBrightness(num: number, den: number): number {
+  const g = gcd(num, den);
+  const rd = den / g;  // reduced denominator
+  if (rd <= 2) return 1.00;
+  if (rd <= 3) return 0.65;
+  if (rd <= 4) return 0.38;
+  return 0.18;         // den 5 (and any higher, though SIMPLE set only goes to 6/1)
+}
+
 // ─── Rounded rect helper ──────────────────────────────────────────────────────
 function roundRect(
   ctx: CanvasRenderingContext2D,
@@ -1000,15 +1016,9 @@ export default function Home() {
         const bb = Math.round(60  + b * (160 - 60));
         borderColor = `rgb(${rb},${gb},${bb})`;
       } else {
-        // NEXT circle unlit
-        const r  = Math.round(13  + b * (30  - 13));
-        const g  = Math.round(26  + b * (74  - 26));
-        const bv = Math.round(13  + b * (30  - 13));
-        baseColor   = `rgb(${r},${g},${bv})`;
-        const rb = Math.round(20  + b * (50  - 20));
-        const gb = Math.round(40  + b * (100 - 40));
-        const bb = Math.round(20  + b * (50  - 20));
-        borderColor = `rgb(${rb},${gb},${bb})`;
+        // NEXT circle unlit — uniform brightness regardless of ratio complexity
+        baseColor   = "rgb(20,48,20)";
+        borderColor = "rgb(30,72,30)";
       }
 
       const cx = pad.x + pad.w / 2;
@@ -1071,9 +1081,8 @@ export default function Home() {
         ctx.fillStyle = isLit ? "#ffffff" : labelColor;
         ctx.fillText(label, cx, pad.y + pad.h - 6);
       } else {
-        // Draw CHORD key — SIMPLE style (brightness-tinted rects)
-        const [rn, rd] = RATIOS[pad.ratioIndex];
-        const bv = ratioBrightness(rn, rd);
+        // Draw CHORD key — SIMPLE style (denominator-tier brightness rects)
+        const bv = simpleDenBrightness(num, den);
         let keyFill: string;
         let keyStroke: string;
         if (isLit) {
