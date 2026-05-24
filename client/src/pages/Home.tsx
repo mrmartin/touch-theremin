@@ -321,22 +321,22 @@ function ratioBrightness(num: number, den: number): number {
 }
 
 // ─── SIMPLE CHORD brightness [0..1] ─────────────────────────────────────────
-// Symmetric: the brightness of a ratio is determined by the denominator of
-// whichever side (num or den) is ≥ 1 after reduction — i.e. min(rn, rd).
-// This makes 6/1 mirror 1/6, 5/1 mirror 1/5, etc.
-//   min 1 or 2 → 1.00 (brightest: 1/1, 1/2, 2/1, 2/3, 3/2, 2/5, 5/2 …)
-//   min 3      → 0.65 (1/3, 3/1, 3/4, 4/3, 3/5, 5/3 …)
-//   min 4      → 0.38 (1/4, 4/1, 4/5, 5/4 …)
-//   min 5      → 0.18 (darkest: 1/5, 5/1, 1/6, 6/1, 5/6, 6/5 …)
+// Five symmetric tiers keyed by max(reduced_num, reduced_den) = q.
+// The right-side inverse of each left-side ratio shares the same tier:
+//   q=2: 1/2 ↔ 2/1                              → level 1 (brightest)
+//   q=3: 1/3, 2/3 ↔ 3/1, 3/2                   → level 2
+//   q=4: 1/4, 3/4 ↔ 4/1, 4/3                   → level 3
+//   q=5: 1/5, 2/5, 3/5, 4/5 ↔ 5/1–5/4          → level 4
+//   q=6: 1/6, 5/6 ↔ 6/1, 6/5                   → level 5 (darkest)
+// 1/1 (q=1) is treated as level 1 (same as q=2).
 function simpleDenBrightness(num: number, den: number): number {
   const g = gcd(num, den);
-  const rn = num / g;
-  const rd = den / g;
-  const tier = Math.min(rn, rd);  // symmetric: use the smaller of the two
-  if (tier <= 2) return 1.00;
-  if (tier <= 3) return 0.65;
-  if (tier <= 4) return 0.38;
-  return 0.18;         // tier 5 or 6 — outermost keys
+  const q = Math.max(num / g, den / g);  // symmetric key
+  if (q <= 2) return 1.00;   // level 1 — brightest
+  if (q <= 3) return 0.78;   // level 2
+  if (q <= 4) return 0.54;   // level 3
+  if (q <= 5) return 0.32;   // level 4
+  return 0.14;               // level 5 — darkest (q=6: 1/6, 5/6, 6/1, 6/5)
 }
 
 // ─── Rounded rect helper ──────────────────────────────────────────────────────
