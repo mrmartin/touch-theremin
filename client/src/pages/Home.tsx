@@ -20,6 +20,7 @@ import { useLocation } from "wouter";
 //   11/12 ↔ 12/11 | 7/8 ↔ 8/7 | 5/6 ↔ 6/5 | 4/5 ↔ 5/4 | 3/4 ↔ 4/3
 //   7/10 ↔ 10/7  | 2/3 ↔ 3/2 | 5/8 ↔ 8/5 | 3/5 ↔ 5/3 | 4/7 ↔ 7/4
 //   6/11 ↔ 11/6  | 1/2 ↔ 2/1
+// PIANO ratios (25 keys, centre at index 12)
 const RATIOS: [number, number][] = [
   // ← down (index 0–11), outermost first
   [1,2],[6,11],[4,7],[3,5],[5,8],[2,3],[7,10],[3,4],[4,5],[5,6],[7,8],[11,12],
@@ -28,6 +29,18 @@ const RATIOS: [number, number][] = [
   // up → (index 13–24), innermost first
   [12,11],[8,7],[6,5],[5,4],[4,3],[10,7],[3,2],[8,5],[5,3],[7,4],[11,6],[2,1],
 ];
+
+// SIMPLE ratios (23 keys, centre at index 11)
+const SIMPLE_RATIOS: [number, number][] = [
+  // ← down (index 0–10), outermost first
+  [1,6],[1,5],[1,4],[1,3],[2,5],[1,2],[3,5],[2,3],[3,4],[4,5],[5,6],
+  // centre (index 11)
+  [1,1],
+  // up → (index 12–22), innermost first
+  [6,5],[5,4],[4,3],[3,2],[5,3],[2,1],[5,2],[3,1],[4,1],[5,1],[6,1],
+];
+const SIMPLE_N_PADS    = 23;
+const SIMPLE_CENTER_IDX = 11;
 
 // ─── GCD ─────────────────────────────────────────────────────────────────────
 function gcd(a: number, b: number): number {
@@ -119,8 +132,8 @@ interface Pad {
   x: number; y: number; w: number; h: number;
 }
 
-const N_PADS = 25; // total pads per row
-const CENTER_IDX = 12; // index of 1/1
+const N_PADS = 25;      // PIANO pads per row
+const CENTER_IDX = 12;  // PIANO centre index
 
 // Staff occupies 1/3 of the playable area (below the top band).
 // NEXT circles sit in a compact strip immediately below the staff.
@@ -131,10 +144,11 @@ function staffHeight(H: number): number {
 }
 
 function buildPads(W: number, H: number, piano = true): Pad[] {
-  const topBand    = Math.round(H * 0.08);
-  const staffH     = staffHeight(H);
-  const playH      = H - topBand - staffH;
-  const padW       = W / N_PADS;
+  const nPads     = piano ? N_PADS : SIMPLE_N_PADS;
+  const topBand   = Math.round(H * 0.08);
+  const staffH    = staffHeight(H);
+  const playH     = H - topBand - staffH;
+  const padW      = W / nPads;
 
   // NEXT circles: diameter = padW * 0.82, clamped 18..56 px
   const circleD    = Math.max(18, Math.min(56, padW * 0.82));
@@ -187,18 +201,18 @@ function buildPads(W: number, H: number, piano = true): Pad[] {
     }
   } else {
     // ── SIMPLE layout: equal-width rects, brightness-tinted ──
-    for (let i = 0; i < N_PADS; i++) {
+    for (let i = 0; i < nPads; i++) {
       pads.push({ index: i, row: "chord", shape: "rect", ratioIndex: i,
         x: i * padW + gap / 2, y: chordY + gap / 2, w: padW - gap, h: chordH - gap });
     }
   }
 
-  // NEXT pads (indices N_PADS..2*N_PADS-1) — circles
-  for (let i = 0; i < N_PADS; i++) {
+  // NEXT pads (indices nPads..2*nPads-1) — circles
+  for (let i = 0; i < nPads; i++) {
     const cx = i * padW + padW / 2;
     const cy = nextStripY + nextStripH / 2;
     pads.push({
-      index: i + N_PADS,
+      index: i + nPads,
       row: "next",
       shape: "circle",
       ratioIndex: i,
@@ -539,8 +553,9 @@ export default function Home() {
 
   // ── Retune all held CHORD voices from integers ──
   function retuneChord(rampMs = 30) {
+    const retuneR = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
     for (const { voice, padIndex } of Array.from(chordVoicesRef.current.values())) {
-      const [pNum, pDen] = RATIOS[padIndex];
+      const [pNum, pDen] = retuneR[padIndex] ?? [1,1];
       voice.retune(exactFreq(pNum, pDen), rampMs);
     }
   }
@@ -569,7 +584,8 @@ export default function Home() {
     const uniquePads = new Set(Array.from(chordVoicesRef.current.values()).map(e => e.padIndex));
     const pc = partialsForChordSize(uniquePads.size);
     for (const [touchId, entry] of Array.from(chordVoicesRef.current)) {
-      const [pNum, pDen] = RATIOS[entry.padIndex];
+      const rebuildR = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
+      const [pNum, pDen] = rebuildR[entry.padIndex] ?? [1,1];
       const freq = exactFreq(pNum, pDen);
       entry.voice.stop(40);
       const newVoice = new Voice(ac, freq, pc);
@@ -661,7 +677,8 @@ export default function Home() {
         playTimersRef.current.push(setTimeout(() => {
           if (!isPlayingRef.current) return;
           const ac = getAC();
-          const [pNum, pDen] = RATIOS[ev.ratioIndex];
+          const playR = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
+          const [pNum, pDen] = playR[ev.ratioIndex] ?? [1,1];
           const freq = baseRef.current * modeNumRef.current * pNum / (modeDenRef.current * pDen);
           const voice = new Voice(ac, freq, 4);
           playVoicesRef.current.set(voiceId, { voice, ratioIndex: ev.ratioIndex });
@@ -689,7 +706,8 @@ export default function Home() {
         // NEXT event
         playTimersRef.current.push(setTimeout(() => {
           if (!isPlayingRef.current) return;
-          const [num, den] = RATIOS[ev.ratioIndex];
+          const playR2 = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
+          const [num, den] = playR2[ev.ratioIndex] ?? [1,1];
           modeNumRef.current *= num;
           modeDenRef.current *= den;
           const g = gcd(modeNumRef.current, modeDenRef.current);
@@ -699,7 +717,7 @@ export default function Home() {
           retuneChord(30);
           // Retune any playing playback voices too
           for (const { voice, ratioIndex } of Array.from(playVoicesRef.current.values())) {
-            const [pNum, pDen] = RATIOS[ratioIndex];
+            const [pNum, pDen] = playR2[ratioIndex] ?? [1,1];
             voice.retune(baseRef.current * modeNumRef.current * pNum / (modeDenRef.current * pDen), 30);
           }
           staffNextRef.current.push({ ratioIndex: ev.ratioIndex, time: performance.now() });
@@ -755,6 +773,12 @@ export default function Home() {
     const now = performance.now();
     const topBand = Math.round(H * 0.08);
 
+    // Mode-aware constants (read from ref, not state, to avoid stale closure)
+    const isPiano     = isPianoRef.current;
+    const activeRatios    = isPiano ? RATIOS : SIMPLE_RATIOS;
+    const activeNPads     = isPiano ? N_PADS : SIMPLE_N_PADS;
+    const activeCenterIdx = isPiano ? CENTER_IDX : SIMPLE_CENTER_IDX;
+
     // Background
     ctx.fillStyle = COLOR.bg;
     ctx.fillRect(0, 0, W, H);
@@ -767,7 +791,7 @@ export default function Home() {
     {
       const staffH  = staffHeight(H);
       const staffY  = topBand;
-      const laneH   = staffH / N_PADS;
+      const laneH   = staffH / activeNPads;
       // Playhead is fixed at 80% from the left
       const playheadX = W * 0.80;
       // Scroll: how many px have elapsed since t=0 at this moment
@@ -787,7 +811,7 @@ export default function Home() {
 
       // Draw note bars
       for (const note of staffNotesRef.current) {
-        const [num, den] = RATIOS[note.ratioIndex];
+        const [num, den] = activeRatios[note.ratioIndex] ?? [1,1];
         const b = ratioBrightness(num, den);
         const isActive = note.endTime === -1;
 
@@ -834,7 +858,7 @@ export default function Home() {
         const lineX = playheadX - (now - ev.time) * SCROLL_PX_PER_MS;
         if (lineX < 0 || lineX > W) continue;
 
-        const centerLaneY = staffY + CENTER_IDX * laneH + laneH / 2;
+        const centerLaneY = staffY + activeCenterIdx * laneH + laneH / 2;
         const targetLaneY = staffY + ev.ratioIndex * laneH + laneH / 2;
 
         const topY    = Math.min(centerLaneY, targetLaneY);
@@ -898,7 +922,7 @@ export default function Home() {
       // Lane divider lines
       ctx.strokeStyle = "rgba(255,255,255,0.05)";
       ctx.lineWidth = 1;
-      for (let i = 0; i <= N_PADS; i++) {
+      for (let i = 0; i <= activeNPads; i++) {
         const ly = staffY + i * laneH;
         ctx.beginPath();
         ctx.moveTo(0, ly);
@@ -930,8 +954,8 @@ export default function Home() {
       // Ratio labels on the left edge of each lane
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      for (let i = 0; i < N_PADS; i++) {
-        const [num, den] = RATIOS[i];
+      for (let i = 0; i < activeNPads; i++) {
+        const [num, den] = activeRatios[i];
         const b = ratioBrightness(num, den);
         const lt = 0.30 + b * 0.45;
         ctx.fillStyle = `rgba(${Math.round(lt*200)},${Math.round(lt*220)},${Math.round(lt*232)},0.7)`;
@@ -953,12 +977,12 @@ export default function Home() {
     const pads = padsRef.current;
     for (const pad of pads) {
       const isChord  = pad.row === "chord";
-      const isCenter = pad.ratioIndex === CENTER_IDX;
+      const isCenter = pad.ratioIndex === activeCenterIdx;
       const isLit    = isChord
         ? litChordRef.current.has(pad.index)
         : (flashRef.current.get(pad.index) ?? 0) > now;
 
-      const [num, den] = RATIOS[pad.ratioIndex];
+      const [num, den] = activeRatios[pad.ratioIndex] ?? [1,1];
       const b = ratioBrightness(num, den);
 
       let baseColor: string;
@@ -1090,7 +1114,7 @@ export default function Home() {
       const lastNext  = pads[pads.length - 1];
       ctx.fillText("NEXT",  W - 4, lastNext.y  + lastNext.h  / 2);
       // CHORD label: use the centre white key (1/1) as vertical reference
-      const centerChord = pads.find(p => p.row === "chord" && p.ratioIndex === CENTER_IDX);
+      const centerChord = pads.find(p => p.row === "chord" && p.ratioIndex === activeCenterIdx);
       if (centerChord) {
         ctx.fillText("CHORD", W - 4, centerChord.y + centerChord.h / 2);
       }
@@ -1370,7 +1394,8 @@ export default function Home() {
 
     if (pad.row === "chord") {
       // Each touch ID owns its own Voice — no collision when two fingers share a pad
-      const [pNum, pDen] = RATIOS[pad.ratioIndex];
+      const activeR = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
+      const [pNum, pDen] = activeR[pad.ratioIndex];
       const ac = getAC();
       // Insert placeholder keyed by touch ID so rebuildChord sees the correct size
       chordVoicesRef.current.set(id, { voice: new Voice(ac, exactFreq(pNum, pDen), 1), padIndex: pad.index });
@@ -1388,7 +1413,8 @@ export default function Home() {
 
     } else {
       // NEXT: multiply MODE
-      const [num, den] = RATIOS[pad.ratioIndex];
+      const activeR = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
+      const [num, den] = activeR[pad.ratioIndex];
       modeNumRef.current *= num;
       modeDenRef.current *= den;
       const g = gcd(modeNumRef.current, modeDenRef.current);
@@ -1419,7 +1445,8 @@ export default function Home() {
     touchMapRef.current.delete(id);
     if (padIndex == null) return;
 
-    if (padIndex < N_PADS) {
+    const curNPads = isPianoRef.current ? N_PADS : SIMPLE_N_PADS;
+    if (padIndex < curNPads) {
       // Stop this touch's own voice (keyed by touch ID, not pad index)
       const entry = chordVoicesRef.current.get(id);
       if (entry) {
@@ -1465,7 +1492,8 @@ export default function Home() {
     if (newIndex === prevIndex) return; // still on the same pad, nothing to do
 
     // Release the old pad if it was a CHORD pad
-    if (prevIndex != null && prevIndex < N_PADS) {
+    const curNPads2 = isPianoRef.current ? N_PADS : SIMPLE_N_PADS;
+    if (prevIndex != null && prevIndex < curNPads2) {
       const entry = chordVoicesRef.current.get(id);
       if (entry) {
         entry.voice.stop(60);
@@ -1501,7 +1529,8 @@ export default function Home() {
 
     if (pad.row === "chord") {
       // Insert placeholder keyed by touch ID then rebuild
-      const [pNum, pDen] = RATIOS[pad.ratioIndex];
+      const activeR2 = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
+      const [pNum, pDen] = activeR2[pad.ratioIndex];
       const ac = getAC();
       chordVoicesRef.current.set(id, { voice: new Voice(ac, exactFreq(pNum, pDen), 1), padIndex: pad.index });
       padRefAdd(pad.index);
@@ -1517,7 +1546,8 @@ export default function Home() {
       }
     } else {
       // Sliding into a NEXT pad fires it once — silent, flash only
-      const [num, den] = RATIOS[pad.ratioIndex];
+      const activeR3 = isPianoRef.current ? RATIOS : SIMPLE_RATIOS;
+      const [num, den] = activeR3[pad.ratioIndex];
       modeNumRef.current *= num;
       modeDenRef.current *= den;
       const g = gcd(modeNumRef.current, modeDenRef.current);
